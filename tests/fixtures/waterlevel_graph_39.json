@@ -1,0 +1,84 @@
+{
+ "result": "OK",
+ "data": {
+  "graph_data": [
+   {
+    "datetime": "2026-10-14 13:50",
+    "value": 4.625,
+    "value_out": null,
+    "discharge": null
+   },
+   {
+    "datetime": "2026-10-14 14:00",
+    "value": 4.632,
+    "value_out": null,
+    "discharge": null
+   },
+   {
+    "datetime": "2026-10-14 14:10",
+    "value": 4.642,
+    "value_out": null,
+    "discharge": null
+   },
+   {
+    "datetime": "2026-10-14 14:20",
+    "value": 4.639,
+    "value_out": null,
+    "discharge": null
+   },
+   {
+    "datetime": "2026-10-14 14:30",
+    "value": 4.641,
+    "value_out": null,
+    "discharge": null
+   },
+   {
+    "datetime": "2026-10-14 14:40",
+    "value": 4.645,
+    "value_out": null,
+    "discharge": null
+   },
+   {
+    "datetime": "2026-10-14 14:50",
+    "value": 4.644,
+    "value_out": null,
+    "discharge": null
+   },
+   {
+    "datetime": "2026-10-14 15:00",
+    "value": 4.649,
+    "value_out": null,
+    "discharge": null
+   },
+   {
+    "datetime": "2026-10-14 15:10",
+    "value": 4.652,
+    "value_out": null,
+    "discharge": null
+   },
+   {
+    "datetime": "2026-10-14 15:20",
+    "value": 4.652,
+    "value_out": null,
+    "discharge": null
+   },
+   {
+    "datetime": "2026-10-14 15:30",
+    "value": 4.648,
+    "value_out": null,
+    "discharge": null
+   },
+   {
+    "datetime": "2026-10-14 15:40",
+    "value": 4.644,
+    "value_out": null,
+    "discharge": null
+   }
+  ],
+  "min_bank": 5.064,
+  "warning_level": null,
+  "critical_level": null,
+  "ground_level": -5.521,
+  "qmax": null
+ }
+}

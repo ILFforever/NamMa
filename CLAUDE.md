@@ -1,0 +1,274 @@
+# CLAUDE.md — Flood Agent (working name: NamMa / น้ำมา)
+
+Read this whole file before writing code. It is the shared context for every teammate's Claude Code session.
+
+## 1. What we're building
+
+A Thai-language **flood assistant** on **Huawei Cloud**, delivered through **LINE OA** (primary) and a **web app** (secondary). The user asks in plain Thai ("น้ำจะถึงบ้านแม่ที่บางระกำไหม"). The agent answers with a decision, using live government water data and what it remembers about the user's household. When the river near a saved location crosses a threshold, it pushes a LINE alert. If the user says they're in danger, the agent creates a structured **rescue ticket** on a responder dashboard.
+
+**Pitch:** Thailand already has the data (ThaiWater, GISTDA, DDPM Cell Broadcast). It's fragmented across 6+ tools, and none of them answers "what should *my family* do *now*". Google Flood Hub knows the river; we know the household.
+
+**Context:** As of mid-Oct 2026, floods affect 2–3M people across ~20 provinces + Bangkok. This is live, and judges are living through it.
+
+**Deadline:** 7 days from 2026-10-14 → demo ~2026-10-21. Scope ruthlessly. Demo one basin: **Chao Phraya corridor (Nakhon Sawan → Chai Nat → Ayutthaya → Bangkok)**.
+
+## 2. Non-negotiable product rules
+
+1. **Numbers come only from data/tools, never from the LLM.** The LLM writes the words; tools supply every water level, trend, distance and time estimate.
+2. **Every answer about risk names its source** ("สถานีวัดน้ำ C.35 บ้านป้อม ห่าง 3 กม.").
+3. **We are unofficial.** Every alert and every risk answer points to DDPM: hotline **1784**, LINE **@1784DDPM**, and official Cell Broadcast warnings. Never tell someone they are safe in a way that discourages following official evacuation orders.
+4. **Station ≠ house.** Station data is a river point. Phrase house-level estimates as estimates, combined with GISTDA flood extent and recurrence for the actual point.
+5. **Memory stores only what the user stated.** Never infer health conditions. Health or vulnerability facts need explicit PDPA consent first (see §7).
+
+## 3. Architecture
+
+**Decision (2026-10-14): run our code on one ECS VM, not FunctionGraph + APIG.** One always-warm FastAPI app serves the LINE webhook (no cold starts; LINE expects a fast reply), the web API and the responder dashboard, and runs ingest/alert on a schedule. It's fewer Huawei services to learn in 7 days. The code is plain Python with no ECS-specific parts, so we can move to FunctionGraph later if it scores points.
+
+```
+          LINE OA ──webhook──┐                ┌── Web app (OBS static + CDN)
+                             ▼                ▼      chat · station map · responder dashboard
+                      ECS VM: FastAPI app ◄───┘      login via LINE Login
+                       │   ├─ MaaS LLM (Qwen / DeepSeek / GLM): chat, memory extraction, rescue triage
+                       │   ├─ tools → RDS (stations, readings, users, memory, tickets)
+                       │   └─ tools → GISTDA API (flood extent, recurrence)
+                       │
+                       ├─ scheduler, every 10 min: ingest ThaiWater → RDS (+ raw JSON to OBS)
+                       └─ alert job after each ingest → compute risk → LINE push (deduped, with cooldown)
+   Forecast model: LightGBM trained on a laptop (CPU is enough), scores written to RDS.
+                   ModelArts only if we want it on the slide.
+```
+
+| AWS mental model | Huawei service we use |
+|---|---|
+| EC2 | ECS (our app) |
+| RDS Postgres | RDS for PostgreSQL (local Docker Postgres until ~day 3 to save credits) |
+| S3 | OBS |
+| Bedrock | MaaS |
+| SageMaker | ModelArts (optional) |
+| Lambda / API Gateway | FunctionGraph / APIG (not used, see decision above) |
+
+**Region:** AP-Bangkok. Confirm the exact region ID in the console before hardcoding it; it lives in `.env` as `HW_REGION`.
+
+### Budget: $200 Huawei credit
+Estimated total is ~$35–80. Rules:
+- **Pay-per-use only**, never monthly/yearly. EIP billed **by traffic**.
+- **No GPU instances**, ever. LightGBM is CPU.
+- Use a standard chat model for chat, not a reasoning model (R1/QwQ thinking tokens cost 5–10×).
+- Set Billing Center budget alerts at $50 and $100.
+- Stop or delete resources after the demo.
+- Check whether the credit covers all services or only MaaS.
+
+## 4. Data sources (verified 2026-10-14)
+
+All ThaiWater endpoints are public, keyless JSON used by thaiwater.net itself. They are **not officially documented**, so cache responses, poll at most every 10 min, wrap them in one client module (`ingest/thaiwater.py`), and credit HII (สถาบันสารสนเทศทรัพยากรน้ำ) in the UI.
+
+**Gotchas (verified):**
+- Numeric fields in `waterlevel_load` are **strings** (`"4.65"`). `waterlevel_graph` values are floats.
+- **Station ids are shared between endpoints**: `station.id` from 4.1 is the `station_id` for 4.2.
+- **Cadence differs by agency:** HII stations (`CPY0xx`) report every 10 min with no discharge. RID key stations (`C.35`, `C.2`…) report **hourly** and include `discharge` (m³/s). Use RID stations as the primary demo sources.
+- `waterlevel_datetime` is local Thai time (UTC+7), no timezone suffix.
+
+### 4.1 ThaiWater: current water levels (all stations)
+`GET https://api-v3.thaiwater.net/api/v1/thaiwater30/public/waterlevel_load` (~1.4 MB, ~800 stations, <1 s)
+
+Response: `waterlevel_data.data[]`. Useful fields per record:
+- `waterlevel_datetime`, `waterlevel_msl`, `waterlevel_msl_previous`, `discharge` (RID only)
+- `situation_level` (1–5; 5 = overflow; **missing on some records**), `storage_percent`
+- `diff_wl_bank` (m, always positive) + `diff_wl_bank_text` ("ล้นตลิ่ง (ม.)" = above bank, "ต่ำกว่าตลิ่ง (ม.)" = below). Apply the sign from the text.
+- `station.id`, `station.tele_station_oldcode` (e.g. `C.35`, `CPY011`), `station.tele_station_name.{th,en}`, `station.tele_station_lat/long`, `left_bank`, `right_bank`, `min_bank`, `ground_level`, `is_key_station`, `critical_level_msl`
+- `geocode.{province_name, amphoe_name, tumbon_name}.{th,en}`, `basin.basin_name`, `river_name`, `agency.agency_shortname.en` (HII, RID, EGAT…)
+
+### 4.2 ThaiWater: water level history (per station)
+`GET https://api-v3.thaiwater.net/api/v1/thaiwater30/public/waterlevel_graph?station_type=tele_waterlevel&station_id={id}&start_date=YYYY-MM-DD&end_date=YYYY-MM-DD`
+
+Response: `data.graph_data[]` with `{datetime, value, value_out, discharge}` plus `data.{min_bank, ground_level, warning_level, critical_level, qmax}`. Contains null gaps.
+- ✅ **Same datum as `waterlevel_msl`**: CPY011 4.65 vs 4.648, C.35 4.90 vs 4.90 at the same timestamp.
+- ✅ **Max ~366 days per request.** Longer ranges are **silently truncated to the last 366 days**. Backfill year by year (`ingest/backfill.py`).
+- ✅ **Depth:** CPY011 (HII, Ayutthaya) has data back to 2012, patchy in some years (2017 empty, 2012/2014 sparse). C.35 (RID) has 2025 at ~80% hourly coverage, and nothing found for 2011–2017. Per-station, per-year coverage for 2018–2025: run `python -m ingest.backfill --coverage`.
+
+### 4.3 ThaiWater: rainfall
+Latest: `GET .../public/rain_24h` (~4.7 MB, ~4,600 stations). `data[]` with `rain_24h`, `rain_1h`, `rainfall_datetime`, `station.{id, tele_station_name, tele_station_lat, tele_station_long, tele_station_oldcode}`, `geocode`, `basin`, `agency`. Rain station ids are a **different id space** from water level stations.
+
+History: `GET .../public/rain_24h_graph?station_type=rainfall_24h&station_id={rain_station_id}` returns hourly `{rainfall_datetime, rainfall_value}` but **ignores start/end dates and always returns the last ~40 h**. There is no rainfall history. Our own logging is the history. Start ingesting rain on day 0.
+
+### 4.4 GISTDA (needs a free API key from https://api-gateway.gistda.or.th)
+- Flood extent (satellite, last 1 day) at a point:
+  `https://api-gateway.gistda.or.th/api/2.0/resources/gi-service/v1.0/disasters/flood-extent-1day?lat={lat}&lon={lon}&api_key={KEY}`
+- Flood recurrence 2011–2023 at a point ("has this spot flooded before, how often"):
+  `https://api-gateway.gistda.or.th/api/2.0/resources/gi-service/v1.0/disasters/flood-recurrence?lat={lat}&lon={lon}&api_key={KEY}`
+
+Response shapes are not yet inspected. Log one real response and write the parser against it.
+
+### 4.5 No API (handle manually)
+- **Shelters:** hand-curate a CSV for the demo basin (name, lat, lon, capacity, accepts patients/pets, phone) → `shelters` table.
+- **DDPM alerts/bulletins:** no API. Don't scrape Facebook. Link to official channels instead.
+- **BMA road sensors / Traffy Fondue:** stretch goals only, unverified.
+
+### 4.6 Demo corridor stations (from live data, 2026-10-14)
+Main stem, upstream → downstream. Ids are ThaiWater `station.id`.
+
+| id | code | name | province | agency |
+|---|---|---|---|---|
+| 2795 | C.2 | ค่ายจิรประวัติ | Nakhon Sawan | RID |
+| 2744 | C.13 | ท้ายเขื่อนเจ้าพระยา (below Chao Phraya Dam) | Chai Nat | RID |
+| 2723 | C.3 | บ้านบางพุทรา | Sing Buri | RID |
+| 2626 | C.7A | บ้านบางแก้ว | Ang Thong | RID |
+| 2609 | C.35 | บ้านป้อม | Ayutthaya | RID |
+| 2599 | C.12 | กรมชลประทานสามเสน | Bangkok | RID |
+
+Tributaries/branches: 2611 C.36 (Noi River, Bang Ban), 2608 C.37 (Bang Ban canal), 2624 S.26 + 2607 S.5 (Pa Sak, joins at Ayutthaya). HII 10-min stations CPY001–CPY015 sit along the same stem. Full list: `data/corridor_stations.csv`.
+
+## 5. Database (RDS for PostgreSQL)
+
+Plain SQL migrations in `/infra/migrations`, applied in filename order by `python -m common.migrate`. No PostGIS; with ~1,000 stations, haversine is fine.
+
+```
+stations(id PK, oldcode, name_th, name_en, lat, lon, basin, river, province, amphoe, tambon,
+         left_bank, right_bank, min_bank, ground_level, critical_level_msl, agency, is_key_station)
+station_edges(upstream_id, downstream_id, approx_travel_hours)   -- hand-built for demo basin
+waterlevel_readings(station_id, ts, level_msl, diff_wl_bank, situation_level, discharge,
+                    PRIMARY KEY(station_id, ts))
+rain_stations(id PK, oldcode, name_th, lat, lon, province, basin)   -- rain ids are a separate id space
+rain_readings(station_id, ts, rain_1h, rain_24h, PRIMARY KEY(station_id, ts))
+station_risk(station_id PK, computed_at, level, trend_cm_per_hr, hours_to_bank, risk_tier, forecast_json)
+
+users(id PK, line_user_id UNIQUE, display_name, language DEFAULT 'th', created_at)
+user_locations(id PK, user_id, label, lat, lon, notes)          -- "บ้าน", "บ้านแม่ บางระกำ"
+user_memory(user_id PK, household JSONB, house JSONB, assets JSONB, needs JSONB,
+            history JSONB, preferences JSONB, updated_at)
+consents(user_id, kind, granted BOOLEAN, ts)                     -- kind: 'sensitive_memory', 'alerts'
+messages(id PK, user_id, channel, role, content, ts)            -- keep last N per user
+conversation_summary(user_id PK, summary, updated_at)
+
+alerts_sent(id PK, user_id, location_id, station_id, risk_tier, ts)  -- dedupe + cooldown
+rescue_tickets(id PK, user_id NULL, raw_text, lat, lon, people_count, vulnerable JSONB,
+               needs JSONB, urgency, status, created_at, updated_at)
+shelters(id PK, name, lat, lon, capacity, accepts_patients, accepts_pets, phone)
+```
+
+`diff_wl_bank` is stored **signed**: positive = above bank (overflow), negative = below.
+
+## 6. Agent design
+
+**Prefer function calling** if MaaS models support it through the API. **Check this on day 1.** If not, implement the same flow manually: classify intent → call tools in code → pass results to the LLM to write the answer.
+
+Tools (each is a plain Python function with typed input and output; unit-test them all):
+- `get_nearest_stations(lat, lon, k=3)` → level, diff to bank, situation level, 3h/12h trend, upstream status
+- `get_forecast(station_id)` → from `station_risk` (rules, or model output if trained)
+- `check_flood_extent(lat, lon)` / `get_flood_recurrence(lat, lon)` → GISTDA
+- `find_shelters(lat, lon, needs)` → filter by accepts_patients / accepts_pets
+- `get_user_profile(user_id)` / `save_location(...)`
+- `create_rescue_ticket(...)`
+
+**Prompt assembly per turn:** system prompt (rules from §2 + tone: calm, direct, Thai) → user memory block (only consented fields) → conversation summary + last ~10 messages → tool results → user message.
+
+**Rescue triage:** if the user signals danger ("น้ำเข้าบ้านแล้ว", "ติดอยู่", "ช่วยด้วย"), immediately give the DDPM 1784 contact. Then extract `{location, people_count, vulnerable, needs, urgency}` with the LLM (zero-shot JSON), confirm with the user via quick replies, and create the ticket. Pre-fill from memory (e.g. known bedridden family member → urgency up).
+
+## 7. User memory
+
+What to remember (structured fields in `user_memory`, not free text):
+- **Places** → `user_locations`
+- **Household:** elderly, bedridden, children, pregnant, pets. ⚠ sensitive
+- **House:** stories, raised ground floor, near canal
+- **Assets:** car, motorbike, ground-floor shop
+- **Needs:** medication, dialysis, oxygen or other power-dependent devices. ⚠ sensitive
+- **History:** past flooding at this place ("2011 น้ำท่วม 1 เมตร")
+- **Preferences:** language, alert hours, verbosity
+
+**Extraction:** after each user message, a second LLM call returns JSON of *newly stated durable facts* or `{}`. Store only stated facts; never infer.
+
+**PDPA:** health and vulnerability details are sensitive personal data under Thailand's PDPA. Before saving any ⚠ field, send a one-tap LINE consent prompt ("ขออนุญาตจำข้อมูลนี้ เพื่อแจ้งเตือนและช่วยเหลือได้เร็วขึ้นไหม"). Record it in `consents`. Without consent, use the fact for this conversation only.
+
+**User control:** "ข้อมูลอะไรที่จำเกี่ยวกับฉัน" shows the profile; "ลบ ___" deletes it. Implement both as quick replies.
+
+## 8. Risk and alert logic
+
+Rules first; the ML forecast is an add-on.
+
+- Per station: `diff_wl_bank`, `situation_level`, trend (cm/hr over the last 3h from our readings), `hours_to_bank` = remaining gap / trend when rising.
+- Upstream check: upstream stations (via `station_edges`) already overflowing → raise downstream risk.
+- Risk tiers: `normal` → `watch` (rising and < 0.5 m to bank) → `warning` (< 6h to bank, or upstream overflow) → `danger` (over bank).
+- Alerts: for each user location, take the nearest relevant station(s). Push only when the tier **increases**, or after a 6h cooldown at `danger`. Respect quiet hours unless `danger`. Escalate tone for households with vulnerable members.
+- Every push includes: what is happening (with numbers and source), what to do now (personalized), nearest shelter, DDPM 1784.
+
+## 9. Forecast model (stretch goal, gated on data)
+
+**Go/no-go (day 2):** history endpoint returns ≥ 2–3 years for the demo-basin stations → GO. Otherwise ship rules only and call ML "future work". *Early signal: likely GO (HII station back to 2012, RID C.35 has 2025). Confirm with `python -m ingest.backfill --coverage`.*
+
+- Target: station level at +6h / +12h / +24h / +48h.
+- Features: own lagged levels and trend, upstream levels with lags based on `station_edges` travel times, upstream rain sums (**only from our own logging; no rain history exists, see 4.3**, so likely drop rain from training), discharge below the Chao Phraya Dam (C.13).
+- Model: LightGBM, trained on a laptop. ModelArts optional.
+- Validation: train on prior years; **test on Sept–Oct 2026, held out**. It must beat a persistence baseline (level stays the same). Report MAE per horizon. This chart is a pitch slide.
+
+## 10. Repo layout
+
+```
+/common     config (.env), DB connection, migration runner
+/ingest     ThaiWater client, ingest job, history backfill
+/agent      tools, prompt assembly, memory extraction, triage
+/line       LINE webhook adapter + push sender (Messaging API)
+/web        Static web app: chat, map, responder dashboard (LINE Login)
+/model      feature building + LightGBM training
+/infra      SQL migrations, hcloud scripts, deploy scripts
+/data       Curated CSVs: corridor stations, station_edges, shelters, demo rescue messages (Thai)
+/tests      pytest; fixtures are trimmed real API responses
+```
+
+Python 3.12. Local dev: `docker compose up -d` (Postgres) → `python -m common.migrate` → `python -m ingest.run`. Web: lightweight static SPA (e.g. Vite + React), built and uploaded to OBS with `obsutil`.
+
+## 11. Huawei Cloud: how to work with it
+
+Claude knows AWS far better than Huawei Cloud and **will** guess wrong parameter names. Rules:
+1. Before writing infrastructure or SDK code for a service, **fetch and read its docs**. Don't rely on memory.
+2. Prove each service with a tiny script (connect, one call, print result) before building on it.
+3. Use the console for one-time setup (MaaS enablement, API keys, first RDS instance). Script only what repeats.
+
+**CLI:** KooCLI (`hcloud`). macOS arm64 binary from `https://ap-southeast-3-hwcloudcli.obs.ap-southeast-3.myhuaweicloud.com/cli/latest/huaweicloud-cli-mac-arm64.tar.gz` → put `hcloud` on PATH. On first run it asks you to accept a privacy statement. `hcloud configure init` stores AK/SK + default region. Run `hcloud <SERVICE> --help` before using a service; don't guess operation names.
+
+References (verify links before relying on them):
+- Huawei Cloud docs portal: https://support.huaweicloud.com/intl/en-us/
+- KooCLI install (macOS): https://support.huaweicloud.com/intl/en-us/qs-hcli/hcli_02_003_03.html
+- KooCLI configure: https://support.huaweicloud.com/intl/en-us/usermanual-hcli/hcli_03_002.html
+- Terraform provider: https://registry.terraform.io/providers/huaweicloud/huaweicloud/latest/docs
+- Python SDK: https://github.com/huaweicloud/huaweicloud-sdk-python-v3
+- LINE Messaging API: https://developers.line.biz/en/docs/messaging-api/
+- LINE Login: https://developers.line.biz/en/docs/line-login/
+
+## 12. Secrets and safety
+
+- Use an IAM sub-user with only the needed services. AK/SK, LINE channel secret/token, GISTDA key and MaaS key go in env vars or `.env` (gitignored). **Never commit secrets.** See `.env.example`.
+- **Ask a human before** any command that creates, deletes, resizes or reconfigures cloud resources, or changes IAM. Creating resources spends the $200 credit.
+- Rate-limit outbound calls to ThaiWater and GISTDA. Cache aggressively.
+
+## 13. Day plan
+
+| Day | Goal | Done when |
+|---|---|---|
+| 0 (tonight) | Accounts, IAM, region, MaaS enabled, repo, `.env.example`. **Ingest job live.** | Readings landing in Postgres every 10 min (local is fine) |
+| 1 | Data spikes: GISTDA key + one response each, MaaS function-calling test. Build `station_edges` travel times for the demo basin. | All §14 open questions answered |
+| 2 | Backfill history. Risk rules + `station_risk`. Tools with unit tests. Go/no-go on ML. | `get_nearest_stations` returns correct live answers |
+| 3 | ECS + RDS up. Agent API + LINE webhook: chat works end to end in Thai, location sharing, saved locations | Ask about a real place in LINE, get a sourced answer |
+| 4 | Memory extraction + PDPA consent + profile view/delete. Alert job + LINE push with dedupe. | Saved location triggers a push in a test |
+| 5 | Rescue triage + responder dashboard. Web app chat + map with LINE Login. (ML training in parallel if GO.) | Danger message → ticket appears on dashboard |
+| 6 | Backtest on Sept–Oct 2026 (forecast or rules). Polish Thai copy. Record demo video. | Backtest chart + video done |
+| 7 | Slides, buffer, rehearse | — |
+
+## 14. Open questions (resolve day 1, then update this file)
+
+- [ ] Huawei Bangkok region ID; MaaS availability and model list there; function-calling support
+- [x] `waterlevel_graph` datum: same as `waterlevel_msl` (§4.2)
+- [~] `waterlevel_graph` history depth: back to 2012 for some HII stations, ≤366 days per call. Per-station coverage table still to run.
+- [x] Rainfall history endpoint: none (§4.3). Log our own from day 0.
+- [ ] GISTDA response shapes (flood-extent, recurrence)
+- [x] ~~FunctionGraph runtime / cold start~~: moot, we run on ECS (§3)
+- [ ] LINE OA plan push-message quota (Thailand)
+- [ ] Does the $200 credit cover all services or only MaaS?
+- [ ] Demo script §15 uses Bang Rakam (Phitsanulok), which is on the **Yom**, outside the Chao Phraya corridor. Either add Yom stations or move the demo household into the corridor (e.g. Bang Ban, Ayutthaya, next to C.36, which is over bank right now).
+
+## 15. Demo script (build toward this)
+
+1. LINE: "บ้านแม่อยู่บางระกำ พิษณุโลก น้ำจะถึงไหม" → sourced answer with station, gap to bank, trend, recurrence, and what to do.
+2. Agent asks about the household; user says grandma is bedridden → consent prompt → saved.
+3. Simulated tier jump at the nearest station → personalized push: earlier evacuation, a shelter that accepts patients, 1784.
+4. "น้ำเข้าบ้านแล้ว ยายเดินไม่ได้" → triage → ticket appears on the responder dashboard, pre-filled and marked urgent.
+5. Backtest slide: our warning lead time on the Sept 2026 event.

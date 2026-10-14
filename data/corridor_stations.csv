@@ -1,0 +1,23 @@
+id,code,name_th,province,river,agency,role,stem_order
+2795,C.2,ค่ายจิรประวัติ,Nakhon Sawan,แม่น้ำเจ้าพระยา,RID,main,1
+568,CPY001,สะพานเดชาติวงศ์,Nakhon Sawan,แม่น้ำเจ้าพระยา,HII,main,1
+584,CPY002,พยุหะคีรี,Nakhon Sawan,แม่น้ำเจ้าพระยา,HII,main,2
+83,CPY003,ปตร.มโนรมย์,Chai Nat,แม่น้ำเจ้าพระยา,HII,main,3
+80,CPY004,สะพานธรรมจักร(วัดธรรมามูล),Chai Nat,แม่น้ำเจ้าพระยา,HII,main,4
+2744,C.13,ท้ายเขื่อนเจ้าพระยา,Chai Nat,แม่น้ำเจ้าพระยา,RID,main,5
+89,CPY005,สรรพยา,Chai Nat,แม่น้ำเจ้าพระยา,HII,main,5
+71,CPY006,อินทร์บุรี,Sing Buri,แม่น้ำเจ้าพระยา,HII,main,6
+2723,C.3,บ้านบางพุทรา,Sing Buri,แม่น้ำเจ้าพระยา,RID,main,7
+68,CPY007,พรหมบุรี,Sing Buri,แม่น้ำเจ้าพระยา,HII,main,8
+2626,C.7A,บ้านบางแก้ว,Ang Thong,แม่น้ำเจ้าพระยา,RID,main,9
+58,CPY008,เมืองอ่างทอง,Ang Thong,แม่น้ำเจ้าพระยา,HII,main,9
+2609,C.35,บ้านป้อม,Phra Nakhon Si Ayutthaya,แม่น้ำเจ้าพระยา,RID,main,10
+39,CPY011,พระนครศรีอยุธยา,Phra Nakhon Si Ayutthaya,แม่น้ำเจ้าพระยา,HII,main,11
+49,CPY012,บางปะอิน,Phra Nakhon Si Ayutthaya,แม่น้ำเจ้าพระยา,HII,main,12
+26,CPY014,สะพานนวลฉวี,Nonthaburi,แม่น้ำเจ้าพระยา,HII,main,13
+2599,C.12,กรมชลประทานสามเสน,Bangkok,แม่น้ำเจ้าพระยา,RID,main,14
+4,CPY015,สะพานกรุงเทพ,Bangkok,แม่น้ำเจ้าพระยา,HII,main,15
+2611,C.36,บ้านบางหลวงโดด,Phra Nakhon Si Ayutthaya,แม่น้ำน้อย,RID,branch,
+2608,C.37,บ้านบางบาล,Phra Nakhon Si Ayutthaya,คลองบางบาล,RID,branch,
+2624,S.26,ท้ายเขื่อนพระรามหก,Phra Nakhon Si Ayutthaya,แม่น้ำป่าสัก,RID,tributary,
+2607,S.5,สะพานปรีดี-ธำรง,Phra Nakhon Si Ayutthaya,แม่น้ำป่าสัก,RID,tributary,

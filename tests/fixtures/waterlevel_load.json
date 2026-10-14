@@ -1,0 +1,176 @@
+{
+ "waterlevel_data": {
+  "result": "OK",
+  "data": [
+   {
+    "id": 1324514437,
+    "waterlevel_datetime": "2026-10-14 14:00",
+    "waterlevel_m": null,
+    "waterlevel_msl": "4.90",
+    "waterlevel_msl_previous": "4.89",
+    "flow_rate": null,
+    "discharge": "1316.00",
+    "storage_percent": "104.04",
+    "sort_order": null,
+    "station_type": "tele_waterlevel",
+    "situation_level": 5,
+    "agency": {
+     "id": 12,
+     "agency_name": {
+      "th": "กรมชลประทาน ",
+      "en": "Royal Irrigation Department",
+      "jp": ""
+     },
+     "agency_shortname": {
+      "th": "ชป.",
+      "en": "RID",
+      "jp": ""
+     }
+    },
+    "basin": {
+     "id": 10,
+     "basin_code": 10,
+     "basin_name": {
+      "th": "ลุ่มน้ำเจ้าพระยา",
+      "en": "Chao Phraya Basin"
+     }
+    },
+    "station": {
+     "id": 2609,
+     "tele_station_name": {
+      "th": "บ้านป้อม"
+     },
+     "tele_station_lat": 14.3691,
+     "tele_station_long": 100.528732,
+     "tele_station_oldcode": "C.35",
+     "tele_station_type": "tele_waterlevel",
+     "left_bank": 5.06,
+     "right_bank": 6.209,
+     "min_bank": 4.35,
+     "ground_level": -9.25,
+     "offset": null,
+     "sub_basin_id": 240,
+     "agency_id": 12,
+     "geocode_id": 415,
+     "hydro_id": 5,
+     "qmax": 1159,
+     "is_key_station": true,
+     "warning_level_m": null,
+     "critical_level_m": null,
+     "critical_level_msl": null
+    },
+    "geocode": {
+     "area_code": "2",
+     "area_name": {
+      "th": "ภาคกลาง",
+      "en": "Central"
+     },
+     "amphoe_code": "01",
+     "amphoe_name": {
+      "th": "พระนครศรีอยุธยา",
+      "en": "Phra Nakhon Si Ayutthaya District"
+     },
+     "tumbon_code": "20",
+     "tumbon_name": {
+      "th": "บ้านป้อม",
+      "en": "Ban Pom"
+     },
+     "province_code": "14",
+     "province_name": {
+      "th": "พระนครศรีอยุธยา",
+      "en": "Phra Nakhon Si Ayutthaya"
+     }
+    },
+    "diff_wl_bank": "0.55",
+    "diff_wl_bank_text": "ล้นตลิ่ง (ม.)",
+    "river_gid": 182479,
+    "river_name": "แม่น้ำเจ้าพระยา"
+   },
+   {
+    "id": 1324549321,
+    "waterlevel_datetime": "2026-10-14 15:30",
+    "waterlevel_m": null,
+    "waterlevel_msl": "4.65",
+    "waterlevel_msl_previous": "4.65",
+    "flow_rate": null,
+    "discharge": null,
+    "storage_percent": "96.07",
+    "sort_order": null,
+    "station_type": "tele_waterlevel",
+    "situation_level": 4,
+    "agency": {
+     "id": 9,
+     "agency_name": {
+      "th": "สถาบันสารสนเทศทรัพยากรน้ำ (องค์การมหาชน)",
+      "en": "Hydro – Informatics Institute (Public Organization)",
+      "jp": ""
+     },
+     "agency_shortname": {
+      "th": "สสน.",
+      "en": "HII",
+      "jp": ""
+     }
+    },
+    "basin": {
+     "id": 10,
+     "basin_code": 10,
+     "basin_name": {
+      "th": "ลุ่มน้ำเจ้าพระยา",
+      "en": "Chao Phraya Basin"
+     }
+    },
+    "station": {
+     "id": 39,
+     "tele_station_name": {
+      "en": "Chao Phraya 11",
+      "th": "พระนครศรีอยุธยา"
+     },
+     "tele_station_lat": 14.36913,
+     "tele_station_long": 100.52861,
+     "tele_station_oldcode": "CPY011",
+     "tele_station_type": "tele_waterlevel",
+     "left_bank": 5.064,
+     "right_bank": 5.524,
+     "min_bank": 5.06,
+     "ground_level": -5.521,
+     "offset": null,
+     "sub_basin_id": 240,
+     "agency_id": 9,
+     "geocode_id": 403,
+     "hydro_id": null,
+     "qmax": null,
+     "is_key_station": false,
+     "warning_level_m": null,
+     "critical_level_m": null,
+     "critical_level_msl": null
+    },
+    "geocode": {
+     "area_code": "2",
+     "area_name": {
+      "th": "ภาคกลาง",
+      "en": "Central"
+     },
+     "amphoe_code": "01",
+     "amphoe_name": {
+      "th": "พระนครศรีอยุธยา",
+      "en": "Phra Nakhon Si Ayutthaya District"
+     },
+     "tumbon_code": "08",
+     "tumbon_name": {
+      "th": "ภูเขาทอง",
+      "en": "Phu Khao Thong"
+     },
+     "province_code": "14",
+     "province_name": {
+      "th": "พระนครศรีอยุธยา",
+      "en": "Phra Nakhon Si Ayutthaya"
+     }
+    },
+    "diff_wl_bank": "0.42",
+    "diff_wl_bank_text": "ต่ำกว่าตลิ่ง (ม.)",
+    "river_gid": 182479,
+    "river_name": "แม่น้ำเจ้าพระยา"
+   }
+  ]
+ }
+}

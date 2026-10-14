@@ -1,0 +1,14 @@
+# Local Postgres for development. Production uses Huawei RDS for PostgreSQL.
+services:
+  db:
+    image: postgres:16
+    environment:
+      POSTGRES_USER: namma
+      POSTGRES_PASSWORD: namma
+      POSTGRES_DB: namma
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+volumes:
+  pgdata:

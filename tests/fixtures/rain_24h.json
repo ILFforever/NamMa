@@ -1,0 +1,123 @@
+{
+ "result": "OK",
+ "data": [
+  {
+   "id": 314635946,
+   "rain_24h": 149,
+   "rain_1h": 0,
+   "rainfall_datetime": "2026-10-14 14:00",
+   "station_type": "rainfall_24h",
+   "agency": {
+    "agency_name": {
+     "th": "กรมทรัพยากรน้ำ",
+     "en": "Department of Water Resources",
+     "jp": ""
+    },
+    "agency_shortname": {
+     "th": "ทน.",
+     "en": "DWR",
+     "jp": ""
+    }
+   },
+   "geocode": {
+    "warning_zone": "07",
+    "area_code": "2",
+    "area_name": {
+     "th": "ภาคกลาง",
+     "en": "Central"
+    },
+    "amphoe_name": {
+     "th": "หนองปรือ",
+     "en": "Nong Prue District"
+    },
+    "tumbon_name": {
+     "th": "สมเด็จเจริญ",
+     "en": "Somdet Charoen"
+    },
+    "province_code": "71",
+    "province_name": {
+     "th": "กาญจนบุรี",
+     "en": "Kanchanaburi"
+    }
+   },
+   "station": {
+    "id": 1080923,
+    "tele_station_name": {
+     "th": "บ้านเขาหินตั้ง"
+    },
+    "tele_station_lat": 14.740015,
+    "tele_station_long": 99.330612,
+    "tele_station_oldcode": "STN1634",
+    "tele_station_type": "rainfall_24h",
+    "sub_basin_id": "1408"
+   },
+   "basin": {
+    "id": 15,
+    "basin_code": 14,
+    "basin_name": {
+     "th": "ลุ่มน้ำแม่กลอง",
+     "en": "Mae Klong Basin"
+    }
+   }
+  },
+  {
+   "id": 314634517,
+   "rain_24h": 137.5,
+   "rain_1h": 0,
+   "rainfall_datetime": "2026-10-14 14:00",
+   "station_type": "rainfall_24h",
+   "agency": {
+    "agency_name": {
+     "th": "กรมทรัพยากรน้ำ",
+     "en": "Department of Water Resources",
+     "jp": ""
+    },
+    "agency_shortname": {
+     "th": "ทน.",
+     "en": "DWR",
+     "jp": ""
+    }
+   },
+   "geocode": {
+    "warning_zone": "06",
+    "area_code": "3",
+    "area_name": {
+     "th": "ภาคเหนือ",
+     "en": "North"
+    },
+    "amphoe_name": {
+     "th": "บ้านไร่",
+     "en": "Ban Rai District"
+    },
+    "tumbon_name": {
+     "th": "บ้านไร่",
+     "en": "Ban Rai"
+    },
+    "province_code": "61",
+    "province_name": {
+     "th": "อุทัยธานี",
+     "en": "Uthai Thani"
+    }
+   },
+   "station": {
+    "id": 1654,
+    "tele_station_name": {
+     "th": "บ้านพุบอน"
+    },
+    "tele_station_lat": 15.07572,
+    "tele_station_long": 99.419734,
+    "tele_station_oldcode": "STN0680",
+    "tele_station_type": "rainfall_24h",
+    "sub_basin_id": "1301"
+   },
+   "basin": {
+    "id": 14,
+    "basin_code": 13,
+    "basin_name": {
+     "th": "ลุ่มน้ำท่าจีน",
+     "en": "Tha Chin Basin"
+    }
+   }
+  }
+ ]
+}
