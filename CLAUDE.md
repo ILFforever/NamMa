@@ -214,7 +214,16 @@ Rules first; the ML forecast is an add-on.
 /tests      pytest; fixtures are trimmed real API responses
 ```
 
-Python 3.12. Local dev: `docker compose up -d` (Postgres) → `python -m common.migrate` → `python -m ingest.run`. Web: lightweight static SPA (e.g. Vite + React), built and uploaded to OBS with `obsutil`.
+Python 3.12. Local dev: `docker compose up -d` (Postgres) → `python -m common.migrate` → `python -m ingest.run`.
+
+**Web (`/web`, built 2026-10-16):**
+- **Stack:** Vite + React 19 + TS + Tailwind 4, react-router (`HashRouter`), TanStack Query, react-leaflet, Recharts.
+- **Run:** `cd web && npm install && npm run dev`, then open http://localhost:5173. Checks: `npm run typecheck && npm test && npm run build`.
+- **API contract:** `docs/api.md` + `web/src/api/types.ts`.
+- **Mock mode (default, `VITE_API_MODE=mock`):** an in-app mock backend (`web/src/api/mock/`) serves real ThaiWater fixtures. Refresh them with `python -m ingest.export_web_fixtures`. Mock state lives in localStorage, so a chat tab and a dashboard tab share it (rehearses demo step 4). `?demo=1` opens a demo panel: role switch, simulate a tier, inject a ticket, reset.
+- **Real backend:** `VITE_API_MODE=http` proxies `/api` to `:8000`. Mock code is excluded from that build.
+- **Why `HashRouter`, no service workers:** OBS can't rewrite deep links, and the LIFF browser has no service workers.
+- **Thai text** lives in `web/src/copy.ts`.
 
 ## 11. Huawei Cloud: how to work with it
 
@@ -263,6 +272,9 @@ References (verify links before relying on them):
 - [x] ~~FunctionGraph runtime / cold start~~: moot, we run on ECS (§3)
 - [ ] LINE OA plan push-message quota (Thailand)
 - [ ] Does the $200 credit cover all services or only MaaS?
+- [ ] **Web hosting.** In AP-Bangkok, OBS's default domain adds `Content-Disposition: attachment`, so pages download instead of rendering. We need a custom domain + HTTPS (LIFF and geolocation need HTTPS too). Recommendation: serve `web/dist` from the ECS FastAPI app on the same origin as `/api` (one cert, no CORS); keep OBS+CDN as a later upgrade.
+- [ ] **Web login.** Recommendation: LIFF on a LINE Login channel under the **same provider** as the OA channel, so the userId matches. The backend verifies the ID token. `initSession()` in `web/src/auth/session.ts` is the hook point. Publish the channel or add judges as Testers before the demo.
+- [ ] **Responder access + audit.** `users.role` or an allowlist, plus a `ticket_events` table. Tickets hold health data. The rest of the schema gaps are listed in `docs/api.md`.
 - [ ] Demo script §15 uses Bang Rakam (Phitsanulok), which is on the **Yom**, outside the Chao Phraya corridor. Either add Yom stations or move the demo household into the corridor (e.g. Bang Ban, Ayutthaya, next to C.36, which is over bank right now).
 
 ## 15. Demo script (build toward this)
