@@ -126,3 +126,53 @@ def test_responder_endpoints_need_token(api, monkeypatch):
     assert c.get("/api/tickets", headers={"Authorization": f"Bearer {login(c, 'responder')}"}).status_code == 200
     assert c.post("/api/demo/simulate", json={"station_id": 1}).status_code == 401
     assert c.post("/api/demo/simulate", json={"station_id": 1}, headers={"Authorization": "Bearer wrong"}).status_code == 401
+
+
+def test_gps_during_triage_replaces_geocoded_coordinates(conn):
+    """Triage geocodes the place name; a GPS share before confirming moves the ticket there and sends it."""
+    r = chat.handle(conn, "U-gps", "web", text="ช่วยด้วย น้ำเข้าบ้าน บางบาล อยุธยา")
+    lat0, status0 = conn.execute("SELECT lat, status FROM rescue_tickets WHERE id = %s", (r.ticket_id,)).fetchone()
+    assert lat0 is not None and lat0 != 14.4321 and status0 == "unconfirmed"
+    r2 = chat.handle(conn, "U-gps", "web", location=(14.4321, 100.4567))
+    assert r2.ticket_id == r.ticket_id and r2.emergency
+    assert conn.execute("SELECT status, lat, lon FROM rescue_tickets WHERE id = %s", (r.ticket_id,)).fetchone() == \
+        ("open", 14.4321, 100.4567)
+    # Shared location went to the ticket, not into saved places
+    assert tools.get_user_profile(conn, tools.get_or_create_user(conn, "U-gps", None))["locations"] == []
+
+
+def test_gps_updates_a_ticket_responders_already_work_on(conn):
+    risk.compute_all(conn, NOW)
+    r = chat.handle(conn, "U-gps2", "line", text="ช่วยด้วย น้ำเข้าบ้าน บางบาล อยุธยา")
+    chat.handle(conn, "U-gps2", "line", text=f"ยืนยันขอความช่วยเหลือ #{r.ticket_id}")
+    tools.update_ticket(conn, r.ticket_id, status="acknowledged")
+    chat.handle(conn, "U-gps2", "line", location=(14.4321, 100.4567))
+    assert conn.execute("SELECT status, lat FROM rescue_tickets WHERE id = %s", (r.ticket_id,)).fetchone() == \
+        ("acknowledged", 14.4321)
+    # Closed tickets are left alone: the next share is a normal risk check
+    tools.update_ticket(conn, r.ticket_id, status="resolved")
+    r3 = chat.handle(conn, "U-gps2", "line", location=(14.41, 100.46))
+    assert r3.ticket_id is None and "T.1" in r3.text
+    assert conn.execute("SELECT lat FROM rescue_tickets WHERE id = %s", (r.ticket_id,)).fetchone()[0] == 14.4321
+
+
+def test_web_replies_drop_hotline_copies_and_emoji_line_keeps_them(conn):
+    risk.compute_all(conn, NOW)
+    q = "บ้านอยู่บางบาล อยุธยา น้ำจะถึงไหม"
+    line, web = chat.handle(conn, "U-line", "line", text=q), chat.handle(conn, "web:s1", "web", text=q)
+    assert line.text.endswith(answer.FOOTER) and "📡" in line.text
+    assert "1784" not in web.text and not chat._EMOJI.search(web.text) and "T.1" in web.text
+    assert web.text.replace("\n", "") == chat._EMOJI.sub("", web.text).replace("\n", "")
+
+    sos = "ช่วยด้วย ติดอยู่บนหลังคา"
+    line, web = chat.handle(conn, "U-line", "line", text=sos), chat.handle(conn, "web:s1", "web", text=sos)
+    assert line.text.startswith(chat.RESCUE_HOTLINE)
+    assert chat.RESCUE_HOTLINE not in web.text and web.text.startswith("น้ำมาเตรียมคำขอ") and web.emergency
+    # The logged assistant message is what the person saw
+    uid = tools.get_or_create_user(conn, "web:s1", None)
+    assert conn.execute("SELECT content FROM messages WHERE user_id = %s AND role = 'assistant' "
+                        "ORDER BY id DESC LIMIT 1", (uid,)).fetchone()[0] == web.text
+
+    # No station source → no HotlineNotice on the web, so the footer text stays (emoji removed)
+    help_ = chat.handle(conn, "web:s1", "web", text="สวัสดี")
+    assert "1784" in help_.text and not chat._EMOJI.search(help_.text)

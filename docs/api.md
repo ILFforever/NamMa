@@ -125,7 +125,9 @@ Request: `{ session_id, message? | postback? | location?: { lat, lon } }`. Exact
   - `triage:cancel`
   - `memory:delete_all`
 - **Required behaviour** (see the mock's `chatScript.ts` and its test for the full demo flow):
-  - Danger messages return `emergency: true`, with 1784 first.
+  - Danger messages return `emergency: true`, with 1784 first (on the web, the EmergencyCard above the reply carries it).
+  - Web replies are plain text without emoji and without the hotline lines the UI already draws: no rescue 1784/1669 line when `emergency` is true, no DDPM footer when `sources` has a station (HotlineNotice). LINE replies keep both.
+  - A location shared within an hour of a rescue request replaces that ticket's coordinates (GPS beats the geocoded place) and sends it if it was unconfirmed.
   - Confirm before creating a ticket.
   - Ask for consent before saving vulnerable or health facts.
   - Say when a place is outside the demo basin instead of guessing.

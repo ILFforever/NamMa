@@ -21,6 +21,9 @@ HELP = ("สวัสดีค่ะ น้ำมาช่วยดูควา�
         "ลองพิมพ์ เช่น \"บ้านแม่อยู่บางบาล อยุธยา น้ำจะถึงไหม\" หรือกดแชร์ตำแหน่ง\n"
         "ถ้าอยู่ในอันตราย พิมพ์ \"ช่วยด้วย\" ได้ทันที\n\n" + answer.FOOTER)
 RISK_WORDS = ("น้ำ", "ท่วม", "ตลิ่ง", "ระดับ", "อพยพ", "เสี่ยง")
+RESCUE_HOTLINE = "🚨 ถ้าอันตรายตอนนี้ โทร 1784 (ปภ.) หรือ 1669 (เจ็บป่วยฉุกเฉิน) ทันที • LINE @1784DDPM"
+# Pictographs and their joiners/variation selectors. Thai (U+0E00 block), "•", "—" and "±" are outside these ranges.
+_EMOJI = re.compile("[\U0001F000-\U0001FAFF\u2139\u2600-\u27BF\u2B00-\u2BFF\uFE0F\u200D] ?")
 
 
 @dataclass
@@ -55,9 +58,25 @@ def handle(conn, external_id: str, channel: str, text: str | None = None,
     elif location:
         tools.log_message(conn, uid, channel, "user", f"[ตำแหน่ง {location[0]:.5f},{location[1]:.5f}]")
     reply = _route(conn, uid, text or "", location, channel)
+    if channel == "web":
+        reply = web_reply(reply)
     tools.log_message(conn, uid, channel, "assistant", reply.text)
     conn.commit()
     return reply
+
+
+def web_reply(reply: Reply) -> Reply:
+    """The web app draws the hotline itself (HotlineNotice under answers with a station source, EmergencyCard
+    above emergency replies), so drop the text copies it would duplicate, and the emoji LINE needs but the
+    web design system does not. Hotline mentions inside sentences stay. LINE output is never passed through here.
+    """
+    text = reply.text
+    if reply.emergency:
+        text = text.removeprefix(RESCUE_HOTLINE + "\n\n")
+    elif any(s["type"] == "station" for s in reply.sources):
+        text = text.removesuffix("\n\n" + answer.FOOTER)
+    text = "\n".join(_EMOJI.sub("", ln).strip() for ln in text.split("\n"))
+    return Reply(text, reply.quick, reply.ticket_id, reply.sources, reply.emergency)
 
 
 def _route(conn, uid: int, text: str, location, channel: str = "line") -> Reply:
@@ -184,12 +203,14 @@ def _talk(conn, uid: int, t: str) -> Reply:
 
 def _on_location(conn, uid: int, location) -> Reply:
     lat, lon = location
+    # A GPS fix beats the place-name or saved-place guess triage started with, so it replaces the ticket's
+    # coordinates; an unconfirmed ticket is sent with it. Tickets being worked on keep their status.
     open_ticket = conn.execute(
-        "SELECT id FROM rescue_tickets WHERE user_id = %s AND lat IS NULL AND created_at > now() - interval '1 hour' "
-        "ORDER BY id DESC LIMIT 1", (uid,)).fetchone()
+        "SELECT id, status FROM rescue_tickets WHERE user_id = %s AND created_at > now() - interval '1 hour' "
+        "AND status NOT IN ('resolved', 'cancelled') ORDER BY id DESC LIMIT 1", (uid,)).fetchone()
     if open_ticket:
-        tid = open_ticket[0]
-        tools.update_ticket(conn, tid, lat=lat, lon=lon, status="open")
+        tid, status = open_ticket
+        tools.update_ticket(conn, tid, lat=lat, lon=lon, status="open" if status == "unconfirmed" else status)
         return Reply(f"📍 ได้รับตำแหน่งแล้ว ส่งคำขอ #{tid} พร้อมพิกัดถึงทีมช่วยเหลือแล้ว\n"
                      "☎️ โทร 1784 ซ้ำได้ถ้าสถานการณ์แย่ลง", ticket_id=tid, emergency=True)
     prof = tools.get_user_profile(conn, uid)
@@ -215,13 +236,13 @@ def _rescue(conn, uid: int, t: str, channel: str = "line") -> Reply:
         lat, lon, place_label = None, None, None
     tid = tools.create_rescue_ticket(conn, uid, t, lat, lon, f["people_count"], f["vulnerable"], f["needs"],
                                      f["urgency"], status="unconfirmed", channel=channel, place_label=place_label)
-    lines = ["🚨 ถ้าอันตรายตอนนี้ โทร 1784 (ปภ.) หรือ 1669 (เจ็บป่วยฉุกเฉิน) ทันที • LINE @1784DDPM",
+    lines = [RESCUE_HOTLINE,
              "", f"น้ำมาเตรียมคำขอความช่วยเหลือ #{tid} ให้ทีมช่วยเหลือแล้ว:",
              f"• จำนวนคน: {f['people_count'] or 'ไม่ระบุ'}",
              f"• ผู้ที่ต้องดูแลพิเศษ: {', '.join(f['vulnerable']) or 'ไม่ระบุ'}",
              f"• ต้องการ: {', '.join(triage.NEEDS_TH.get(n, n) for n in f['needs'])}",
              f"• ความเร่งด่วน: {'วิกฤต' if f['urgency'] == 'critical' else 'สูง'}",
-             f"• ตำแหน่ง: {'มีแล้ว' if lat is not None else 'ยังไม่มี กรุณาแชร์ตำแหน่ง'}",
+             f"• ตำแหน่ง: {f'ประมาณจาก {place_label} แชร์ตำแหน่งเพื่อให้แม่นขึ้น' if lat is not None else 'ยังไม่มี กรุณาแชร์ตำแหน่ง'}",
              "", "ระหว่างรอ: ขึ้นที่สูง ปิดไฟฟ้า อยู่ห่างกระแสน้ำ เปิดโทรศัพท์ไว้"]
     quick = [_q("ยืนยันส่งคำขอ", f"ยืนยันขอความช่วยเหลือ #{tid}"), LOCATION_Q]
     return Reply("\n".join(lines), quick, ticket_id=tid, emergency=True)

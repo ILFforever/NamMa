@@ -69,7 +69,8 @@ def test_question_about_a_station_returns_reply_sources_and_quick_replies(seeded
     assert "ingested_at" in body["meta"]
     d = body["data"]
     assert set(d) == {"reply", "sources", "quick_replies", "emergency", "ticket_id"}
-    assert "T.1" in d["reply"] and "1784" in d["reply"]
+    # The web draws HotlineNotice under answers with a station source: no text copy, no emoji (LINE keeps both).
+    assert "T.1" in d["reply"] and "1784" not in d["reply"] and not chat._EMOJI.search(d["reply"])
     station = next(s for s in d["sources"] if s["type"] == "station")
     assert station["station_id"] == STATION and station["code"] == "T.1" and station["name_th"] == "สถานีทดสอบ"
     assert 0 < station["distance_km"] < 60 and station["observed_at"]
@@ -92,7 +93,9 @@ def test_danger_message_is_emergency_and_creates_a_web_ticket(seeded):
     sid = str(uuid.uuid4())
     d = _chat(client, {"session_id": sid, "message": "ช่วยด้วย ติดอยู่บนหลังคาที่บางบาล อยุธยา"}).json()["data"]
     assert d["emergency"] is True and d["ticket_id"] is not None
-    assert d["reply"].splitlines()[0].startswith("🚨") and "1784" in d["reply"]
+    # EmergencyCard above the reply carries 1784/1669, so the text starts with the ticket itself.
+    assert chat.RESCUE_HOTLINE not in d["reply"] and not chat._EMOJI.search(d["reply"])
+    assert d["reply"].startswith(f"น้ำมาเตรียมคำขอความช่วยเหลือ #{d['ticket_id']}")
     channel, status, place = conn.execute(
         "SELECT channel, status, place_label FROM rescue_tickets WHERE id = %s", (d["ticket_id"],)).fetchone()
     assert (channel, status) == ("web", "unconfirmed") and "บางบาล" in place
