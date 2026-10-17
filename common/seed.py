@@ -21,8 +21,20 @@ def _num(v):
     return float(v) if v not in (None, "") else None
 
 
+def _corridor(conn) -> tuple[int, int]:
+    """stem_order and role for the demo corridor (data/corridor_stations.csv). Returns (matched, listed)."""
+    rows = _rows("corridor_stations.csv")
+    matched = 0
+    for r in rows:
+        matched += conn.execute(
+            "UPDATE stations SET stem_order = %s, role = %s WHERE id = %s",
+            (int(r["stem_order"]) if r["stem_order"] else None, r["role"] or None, int(r["id"]))).rowcount
+    return matched, len(rows)
+
+
 def main() -> None:
     with connect() as conn:
+        corridor_matched, corridor_listed = _corridor(conn)
         known = {r[0] for r in conn.execute("SELECT id FROM stations")}
         edges = [e for e in _rows("station_edges.csv")
                  if int(e["upstream_id"]) in known and int(e["downstream_id"]) in known]
@@ -40,7 +52,8 @@ def main() -> None:
                 "accepts_pets = EXCLUDED.accepts_pets, phone = EXCLUDED.phone, notes = EXCLUDED.notes",
                 (s["name"], float(s["lat"]), float(s["lon"]), int(s["capacity"] or 0) or None,
                  s["accepts_patients"] == "true", s["accepts_pets"] == "true", s["phone"] or None, s["notes"] or None))
-        print(f"seeded {len(edges)} station_edges, {len(shelters)} shelters")
+        print(f"seeded corridor {corridor_matched}/{corridor_listed} stations, "
+              f"{len(edges)} station_edges, {len(shelters)} shelters")
 
 
 if __name__ == "__main__":

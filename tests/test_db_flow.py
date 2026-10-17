@@ -114,12 +114,15 @@ def test_shared_location_attaches_to_ticket(conn):
     assert conn.execute("SELECT status, lat FROM rescue_tickets WHERE id = %s", (r.ticket_id,)).fetchone() == ("open", 14.41)
 
 
-def test_responder_endpoints_need_token(monkeypatch):
-    from fastapi.testclient import TestClient
+def test_responder_endpoints_need_token(api, monkeypatch):
+    """/api/tickets uses session auth (401 without a session, 403 for a user); /api/demo/simulate still uses RESPONDER_TOKEN."""
+    from tests.conftest import login
 
-    import api.main as m
     monkeypatch.setenv("RESPONDER_TOKEN", "t0k")
-    c = TestClient(m.app)
+    c, _ = api
     assert c.get("/api/tickets").status_code == 401
     assert c.get("/api/tickets", headers={"Authorization": "Bearer wrong"}).status_code == 401
+    assert c.get("/api/tickets", headers={"Authorization": f"Bearer {login(c, 'user')}"}).status_code == 403
+    assert c.get("/api/tickets", headers={"Authorization": f"Bearer {login(c, 'responder')}"}).status_code == 200
     assert c.post("/api/demo/simulate", json={"station_id": 1}).status_code == 401
+    assert c.post("/api/demo/simulate", json={"station_id": 1}, headers={"Authorization": "Bearer wrong"}).status_code == 401
