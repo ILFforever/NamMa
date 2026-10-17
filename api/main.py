@@ -7,6 +7,7 @@ import os
 import threading
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta
+from pathlib import Path
 
 from fastapi import Depends, FastAPI, Header, HTTPException
 from fastapi.staticfiles import StaticFiles
@@ -46,7 +47,7 @@ async def lifespan(_app):
 app = FastAPI(title="NamMa", lifespan=lifespan)
 install_error_handlers(app)
 app.include_router(line_router)
-# Web API contract: docs/api.md (+ web/src/api/types.ts).
+# Web API contract: docs/api.md (+ src/api/types.ts in namma-web).
 for module in (auth, stations, tickets, chat_web):
     app.include_router(module.router)
 
@@ -97,7 +98,8 @@ def api_refresh():
     return {"stations": len(res)}
 
 
-# The built web app (cd web && npm run build) on the same origin as /api: one cert, no CORS.
-WEB_DIST = ROOT / "web" / "dist"
+# The built web app (namma-web repo: npm run build) on the same origin as /api: one cert, no CORS.
+# Default: the namma-web checkout next to this repo.
+WEB_DIST = Path(os.environ.get("WEB_DIST", ROOT.parent / "namma-web" / "dist"))
 if WEB_DIST.is_dir():
     app.mount("/", StaticFiles(directory=WEB_DIST, html=True), name="web")

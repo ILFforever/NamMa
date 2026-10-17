@@ -3,8 +3,8 @@
     python -m ingest.export_web_fixtures            # live waterlevel_load + 7 days of history
     python -m ingest.export_web_fixtures --days 3
 
-Writes web/src/api/mock/fixtures/stations.json and readings.json for the stations in
-data/corridor_stations.csv. ~25 requests at the client's 1 req/s limit.
+Writes stations.json and readings.json for the stations in data/corridor_stations.csv into the namma-web
+repo's src/api/mock/fixtures (default: the checkout next to this one, ../namma-web; or --out DIR). ~25 requests at the client's 1 req/s limit.
 
 Risk here is PROVISIONAL: a simplified version of the CLAUDE.md §8 rules so the mock map
 has tiers. Swap provisional_risk() for the real risk module once it exists.
@@ -18,7 +18,7 @@ from pathlib import Path
 from ingest import thaiwater
 
 ROOT = Path(__file__).resolve().parent.parent
-OUT = ROOT / "web" / "src" / "api" / "mock" / "fixtures"
+OUT = ROOT.parent / "namma-web" / "src" / "api" / "mock" / "fixtures"   # namma-web checkout next to this repo; --out overrides
 RISING_CM_PER_HR = 0.5
 WATCH_GAP_M = 0.5
 WARNING_HOURS = 6.0
@@ -83,7 +83,9 @@ def load_edges() -> list[dict]:
 def main() -> None:
     p = argparse.ArgumentParser()
     p.add_argument("--days", type=int, default=7)
+    p.add_argument("--out", type=Path, default=OUT, help="namma-web's src/api/mock/fixtures directory")
     args = p.parse_args()
+    out = args.out
 
     corridor = load_corridor()
     edges = load_edges()
@@ -143,15 +145,15 @@ def main() -> None:
                 for sid, rows in history.items()}
 
     ingested_at = max((r["ts"] for r in latest.values()), default=None)
-    OUT.mkdir(parents=True, exist_ok=True)
+    out.mkdir(parents=True, exist_ok=True)
     meta = {"generated_at": datetime.now(thaiwater.BKK).isoformat(timespec="seconds"),
             "ingested_at": ingested_at.isoformat() if ingested_at else None,
             "source": "ThaiWater (HII) waterlevel_load + waterlevel_graph",
             "risk": "provisional, see ingest/export_web_fixtures.py"}
-    (OUT / "stations.json").write_text(
+    (out / "stations.json").write_text(
         json.dumps({"meta": meta, "stations": out_stations, "edges": edges}, ensure_ascii=False, indent=1),
         encoding="utf-8")
-    (OUT / "readings.json").write_text(
+    (out / "readings.json").write_text(
         json.dumps({"meta": meta, "columns": ["ts", "level_msl", "diff_wl_bank", "discharge"],
                     "readings": readings}, ensure_ascii=False, separators=(",", ":")),
         encoding="utf-8")
@@ -159,7 +161,7 @@ def main() -> None:
     for s in out_stations:
         t = s["risk"]["tier"] if s["risk"] else "unknown"
         tiers[t] = tiers.get(t, 0) + 1
-    print(f"wrote {len(out_stations)} stations, tiers {tiers} -> {OUT}")
+    print(f"wrote {len(out_stations)} stations, tiers {tiers} -> {out}")
 
 
 if __name__ == "__main__":

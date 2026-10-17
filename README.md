@@ -15,12 +15,12 @@ docker compose up -d                  # Postgres on :5432
 .venv/bin/pytest -q
 ```
 
-Web app (mock API with real ThaiWater fixtures; see `docs/api.md` for the contract):
+Web app: separate repo **`namma-web`**, cloned next to this one (`../namma-web`). Contract: `docs/api.md`.
 
 ```bash
-cd web && npm install && npm run dev  # http://localhost:5173  (add #/map?demo=1 for the demo panel)
-npm run typecheck && npm test && npm run build
-python -m ingest.export_web_fixtures  # refresh web/src/api/mock/fixtures from live ThaiWater (repo root)
+cd ../namma-web && npm ci && npm run dev  # mock API, http://localhost:5173 (add #/map?demo=1 for the demo panel)
+VITE_API_MODE=http npx vite               # against this API on :8000
+python -m ingest.export_web_fixtures      # (here) refresh ../namma-web/src/api/mock/fixtures from live ThaiWater
 ```
 
 History: `python -m ingest.backfill --coverage` (read-only coverage table), then `python -m ingest.backfill --from 2018`.
@@ -31,7 +31,7 @@ History: `python -m ingest.backfill --coverage` (read-only coverage table), then
 .venv/bin/python -m common.seed                       # station_edges + shelters (after the first ingest)
 SCHEDULER=1 .venv/bin/uvicorn api.main:app --port 8000  # API + LINE webhook + 10-min ingest → risk → forecast → alerts
 ```
-- Chat + station map: http://localhost:8000 · Responder dashboard: `/web/dashboard.html?token=$RESPONDER_TOKEN`
+- Web app (built `../namma-web/dist`, or set `WEB_DIST`): http://localhost:8000/#/chat · `#/map` · `#/dashboard`
 - Demo step 3 (tier jump → alert): `POST /api/demo/simulate {"station_id": 2609, "tier": "danger"}`, undo with `POST /api/demo/refresh`
 - Without MaaS / GISTDA / LINE keys everything still works: rule-based Thai, no satellite lines, web chat instead of LINE.
 

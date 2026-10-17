@@ -1,6 +1,6 @@
 # NamMa web API contract (v0, 2026-10-16)
 
-The FastAPI app on ECS serves this API to the web app (`web/`). The web app runs today against an in-app mock of it (`web/src/api/mock/`), so **the mock is the executable spec**. Its tests in `web/src/api/mock/mock.test.ts` pin the behaviour below. TypeScript types: `web/src/api/types.ts`. Keep this file, the types and the mock in sync. If the backend needs a different shape, change all three in the same PR.
+The FastAPI app on ECS serves this API to the web app (the **`namma-web`** repo). Paths below starting `src/` are in that repo. The web app can run against an in-app mock of the API (`src/api/mock/`), so **the mock is the executable spec**. Its tests in `src/api/mock/mock.test.ts` pin the behaviour below. TypeScript types: `src/api/types.ts`. Keep this file, the types and the mock in sync. If the backend needs a different shape, change all three together: one PR in each repo, linked to each other.
 
 Switch the web app to the real backend with `VITE_API_MODE=http` (the dev server proxies `/api` to `http://localhost:8000`).
 
