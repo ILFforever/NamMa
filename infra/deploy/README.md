@@ -21,7 +21,7 @@ ssh root@<EIP> 'NAMMA_DOMAIN=<EIP>.sslip.io bash /root/deploy/setup_ecs.sh'
 ```bash
 scp .env root@<EIP>:/opt/namma/.env      # first time only, then edit it on the VM:
 #   DATABASE_URL = the line from /root/namma_db_url.txt
-#   SCHEDULER=1, DEMO_MODE=0 after the demo, RESPONDER_TOKEN=<long random string>
+#   SCHEDULER=1, DEMO_MODE=0 after the demo, RESPONDER_LINE_IDS=<responders' LINE userIds, comma-separated>
 (cd ../namma-web && npm ci && VITE_API_MODE=http npm run build)   # web app, from the namma-web repo
 bash infra/deploy/push.sh root@<EIP>
 ```

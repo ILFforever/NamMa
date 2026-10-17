@@ -209,14 +209,14 @@ Rules first; the ML forecast is an add-on.
 /api        FastAPI app: LINE webhook, web API, responder API, demo endpoints, serves the built web app
 /line       LINE webhook adapter + push sender (Messaging API)
 /model      travel times, LightGBM forecast (train/score), rule backtest; artifacts/ not in git
-/infra      SQL migrations, hcloud scripts, deploy scripts
+/infra      SQL migrations, Huawei console checklist, deploy scripts
 /data       Curated CSVs: corridor stations, station_edges, shelters, demo rescue messages (Thai)
 /tests      pytest; fixtures are trimmed real API responses
 ```
 
 Python 3.12. Local dev: `docker compose up -d` (Postgres) → `python -m common.migrate` → `python -m ingest.run`.
 
-**Two repos (split 2026-10-17):** this one (`namma`, backend) and **`namma-web`** (the web app, history kept). Clone them side by side: `../namma-web` is the default for the API's `WEB_DIST` (`../namma-web/dist`), `ingest.export_web_fixtures` and `infra/deploy/push.sh`. A contract change is a PR in each repo, linked, changing `docs/api.md` here and `src/api/types.ts` + the mock there together.
+**Two repos (split 2026-10-17):** this one (**`NamMa-CEDT/namma-backend`**) and **`NamMa-CEDT/namma-web`** (the web app, history kept). Clone them side by side: `../namma-web` is the default for the API's `WEB_DIST` (`../namma-web/dist`), `ingest.export_web_fixtures` and `infra/deploy/push.sh`. A contract change is a PR in each repo, linked, changing `docs/api.md` here and `src/api/types.ts` + the mock there together.
 
 **Web (`namma-web` repo, built 2026-10-16):**
 - **Stack:** Vite + React 19 + TS + Tailwind 4, react-router (`HashRouter`), TanStack Query, react-leaflet, Recharts.
@@ -232,14 +232,10 @@ Python 3.12. Local dev: `docker compose up -d` (Postgres) → `python -m common.
 Claude knows AWS far better than Huawei Cloud and **will** guess wrong parameter names. Rules:
 1. Before writing infrastructure or SDK code for a service, **fetch and read its docs**. Don't rely on memory.
 2. Prove each service with a tiny script (connect, one call, print result) before building on it.
-3. Use the console for one-time setup (MaaS enablement, API keys, first RDS instance). Script only what repeats.
-
-**CLI:** KooCLI (`hcloud`). macOS arm64 binary from `https://ap-southeast-3-hwcloudcli.obs.ap-southeast-3.myhuaweicloud.com/cli/latest/huaweicloud-cli-mac-arm64.tar.gz` → put `hcloud` on PATH. On first run it asks you to accept a privacy statement. `hcloud configure init` stores AK/SK + default region. Run `hcloud <SERVICE> --help` before using a service; don't guess operation names.
+3. **Decision (2026-10-17): no CLI.** All Huawei setup goes through the web console (a teammate, or Claude in Chrome on their machine). Checklist: `infra/huawei/README.md`. The app itself calls no Huawei API with account keys, so no AK/SK on the VM.
 
 References (verify links before relying on them):
 - Huawei Cloud docs portal: https://support.huaweicloud.com/intl/en-us/
-- KooCLI install (macOS): https://support.huaweicloud.com/intl/en-us/qs-hcli/hcli_02_003_03.html
-- KooCLI configure: https://support.huaweicloud.com/intl/en-us/usermanual-hcli/hcli_03_002.html
 - Terraform provider: https://registry.terraform.io/providers/huaweicloud/huaweicloud/latest/docs
 - Python SDK: https://github.com/huaweicloud/huaweicloud-sdk-python-v3
 - LINE Messaging API: https://developers.line.biz/en/docs/messaging-api/
@@ -247,7 +243,7 @@ References (verify links before relying on them):
 
 ## 12. Secrets and safety
 
-- Use an IAM sub-user with only the needed services. AK/SK, LINE channel secret/token, GISTDA key and MaaS key go in env vars or `.env` (gitignored). **Never commit secrets.** See `.env.example`.
+- Do console work as an IAM sub-user with only the needed services, not the main account. LINE channel secret/token, GISTDA key and MaaS key go in env vars or `.env` (gitignored). **Never commit secrets.** See `.env.example`.
 - **Ask a human before** any command that creates, deletes, resizes or reconfigures cloud resources, or changes IAM. Creating resources spends the $200 credit.
 - Rate-limit outbound calls to ThaiWater and GISTDA. Cache aggressively.
 

@@ -2,14 +2,13 @@
 
     uvicorn api.main:app --port 8000        # SCHEDULER=1 also runs ingest → risk → alerts every 10 min
 """
-import hmac
 import os
 import threading
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta
 from pathlib import Path
 
-from fastapi import Depends, FastAPI, Header, HTTPException
+from fastapi import Depends, FastAPI, HTTPException
 from fastapi.staticfiles import StaticFiles
 from psycopg.rows import dict_row
 from pydantic import BaseModel  # noqa: E402
@@ -22,18 +21,6 @@ from api import auth, chat_web, stations, tickets
 from api.common import install_error_handlers
 
 DEMO = os.environ.get("DEMO_MODE", "1") == "1"
-
-
-def responder(authorization: str | None = Header(None)) -> None:
-    """Rescue tickets are PDPA-sensitive: responder endpoints need RESPONDER_TOKEN as a Bearer token.
-    Without a token configured, only DEMO_MODE (local dev) is let through."""
-    token = os.environ.get("RESPONDER_TOKEN")
-    if not token:
-        if DEMO:
-            return
-        raise HTTPException(503, "RESPONDER_TOKEN not set")
-    if not authorization or not hmac.compare_digest(authorization, f"Bearer {token}"):
-        raise HTTPException(401, "responder token required")
 
 
 
@@ -73,7 +60,7 @@ class Simulate(BaseModel):
     tier: str = "danger"
 
 
-@app.post("/api/demo/simulate", dependencies=[Depends(responder)])
+@app.post("/api/demo/simulate", dependencies=[Depends(auth.require_responder)])
 def api_simulate(body: Simulate):
     """Demo step 3: force a tier jump at one station and run the alert job right away."""
     if not DEMO:
@@ -90,7 +77,7 @@ def api_simulate(body: Simulate):
     return {"ok": True, "alerts_sent": sent}
 
 
-@app.post("/api/demo/refresh", dependencies=[Depends(responder)])
+@app.post("/api/demo/refresh", dependencies=[Depends(auth.require_responder)])
 def api_refresh():
     """Recompute real risk (undoes simulate)."""
     with connect() as conn:
