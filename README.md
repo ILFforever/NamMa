@@ -15,7 +15,7 @@ docker compose up -d                  # Postgres on :5432
 .venv/bin/pytest -q
 ```
 
-Web app: separate repo **`namma-web`**, cloned next to this one (`../namma-web`). Contract: `docs/api.md`.
+Web app: separate repo **`NamMa-CEDT/namma-web`**, cloned next to this one (`../namma-web`). Contract: `docs/api.md`.
 
 ```bash
 cd ../namma-web && npm ci && npm run dev  # mock API, http://localhost:5173 (add #/map?demo=1 for the demo panel)
@@ -32,7 +32,7 @@ History: `python -m ingest.backfill --coverage` (read-only coverage table), then
 SCHEDULER=1 .venv/bin/uvicorn api.main:app --port 8000  # API + LINE webhook + 10-min ingest → risk → forecast → alerts
 ```
 - Web app (built `../namma-web/dist`, or set `WEB_DIST`): http://localhost:8000/#/chat · `#/map` · `#/dashboard`
-- Demo step 3 (tier jump → alert): `POST /api/demo/simulate {"station_id": 2609, "tier": "danger"}`, undo with `POST /api/demo/refresh`
+- Demo step 3 (tier jump → alert): `POST /api/demo/simulate {"station_id": 2609, "tier": "danger"}`, undo with `POST /api/demo/refresh`. Both need a responder session: `TOKEN=$(curl -s localhost:8000/api/auth/line -H 'content-type: application/json' -d '{"id_token":"demo:responder"}' | jq -r .data.session_token)`, then `-H "Authorization: Bearer $TOKEN"`.
 - Without MaaS / GISTDA / LINE keys everything still works: rule-based Thai, no satellite lines, web chat instead of LINE.
 
 ## Model and backtest

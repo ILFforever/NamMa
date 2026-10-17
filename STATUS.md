@@ -1,4 +1,6 @@
-# NamMa status — 2026-10-17
+# NamMa status — 2026-10-17 (evening)
+
+Two repos in the **NamMa-CEDT** org: `namma-backend` (this one) and `namma-web`. Work happens on branches + PRs.
 
 ## Done
 
@@ -15,33 +17,29 @@
 | Agent | Sourced Thai answer: station, distance, trend, forecast, advice, shelter, 1784 | Live demo |
 | Agent | Saves "บ้านแม่" as a watched place | Live demo |
 | Agent | Memory + PDPA consent; view and delete | DB test |
-| Agent | Rescue triage → ticket, pre-filled from memory, confirm step | DB test + live demo |
+| Agent | Rescue triage → ticket, pre-filled from memory, confirm step; a GPS share replaces the place-name location | DB test + live demo |
+| Agent | Web replies: plain text, no duplicate hotline (the UI draws it); LINE unchanged | DB + API tests |
 | Agent | Optional LLM advice, rejected if it adds numbers | Unit test |
 | Alerts | Push only when tier rises, 6 h repeat at danger, quiet hours, personal tone | DB test; live alerts sent, no duplicates |
-| App | FastAPI: web chat, map data, tickets, demo trigger, health check | Running on port 8000 (local) |
+| API | Web API contract (`docs/api.md`): envelope + errors, LINE ID-token login + demo login, sessions, responder role, stations, shelters, tickets with audit trail, chat | 79 backend tests; end to end on live data |
 | App | LINE webhook: signature check, reply, push, quick replies, crash fallback with 1784 | Unit test (not yet tested with real LINE) |
-| App | Responder token + chat rate limit | DB test |
-| App | Cleanup of old raw files and messages | In the 10-min loop |
-| Web | Chat + station map page; responder dashboard | Basic pages, no build step |
-| Deploy | ECS kit: service file, auto-HTTPS, setup + push scripts, guide (`infra/deploy/`) | Written, not run (no VM yet) |
-| Tests | 19 tests incl. full DB flow | All pass |
-| Docs | README + CLAUDE.md updated | Done |
+| Web | `namma-web`: chat, station map, responder dashboard on the NamMa design system; mock or real API | 26 tests, typecheck, build; end to end against the API |
+| Deploy | ECS kit: service file, auto-HTTPS, setup + push scripts (ships the web build too), guide (`infra/deploy/`) | Written, not run (no VM yet) |
 
 ## To do
 
 | Priority | What | Who | Blocked by |
 |---|---|---|---|
-| 🔴 | Stop the Dolby memory leak (`DAX3API.exe`) on the dev laptop | Laptop owner | Needs admin on the laptop |
-| 🔴 | Commit the work | Dev | Owner's OK |
 | 🔴 | LINE channel → keys in `.env` | Owner | — |
-| 🔴 | Create the ECS VM, then run `infra/deploy/README.md` | Owner + dev | Credit approval |
+| 🔴 | Create the ECS VM (`infra/huawei/README.md`), then run `infra/deploy/README.md` | Owner + dev | Credit approval |
 | 🔴 | Point the LINE webhook at the VM; test the bot for real | Owner + dev | VM + LINE keys |
+| 🔴 | Before the site is public: `DEMO_MODE=0`, no `VITE_DEMO_LOGIN`, set `RESPONDER_LINE_IDS` | Dev | VM |
 | 🟠 | MaaS key; test Thai advice quality and function calling | Owner + dev | Key |
 | 🟠 | GISTDA key; fix the parser against a real response | Owner + dev | Key |
 | 🟠 | Replace sample shelters (`data/shelters.csv`) with real ones | Team | Real list |
 | 🟠 | Rehearse demo step 3 (forced tier jump → alert) on LINE | Dev | LINE live |
+| 🟡 | LINE Login (LIFF) on the web app | Dev | LINE Login channel |
 | 🟡 | Charts for the backtest + model slides | Dev | — |
-| 🟡 | LINE Login on the web app | Dev | LINE Login channel |
 | 🟡 | Polish Thai wording (native-speaker review) | Team | — |
 | 🟡 | OBS upload of raw archives | Dev | OBS bucket |
 | 🟡 | Answer the open questions: region ID, LINE push quota, what the credit covers | Owner | Console access |
