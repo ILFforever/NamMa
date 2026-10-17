@@ -1,4 +1,4 @@
-"""Stations and shelters (docs/api.md → Stations, Shelters). Shapes mirror web/src/api/types.ts.
+"""Stations and shelters (docs/api.md → Stations, Shelters). Shapes mirror src/api/types.ts in namma-web.
 
 Numbers come from the database only; distances are computed here with agent.geo.haversine_km.
 Route order matters: /nearest is registered before /{station_id}.

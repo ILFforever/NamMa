@@ -206,9 +206,8 @@ Rules first; the ML forecast is an add-on.
 /common     config (.env), DB connection, migration runner
 /ingest     ThaiWater client, ingest job, history backfill
 /agent      tools, risk rules, chat flow, memory extraction, triage, alerts, jobs (scheduler)
-/api        FastAPI app: LINE webhook, web API, responder API, demo endpoints, serves /web
+/api        FastAPI app: LINE webhook, web API, responder API, demo endpoints, serves the built web app
 /line       LINE webhook adapter + push sender (Messaging API)
-/web        Static web app: chat, map, responder dashboard (LINE Login)
 /model      travel times, LightGBM forecast (train/score), rule backtest; artifacts/ not in git
 /infra      SQL migrations, hcloud scripts, deploy scripts
 /data       Curated CSVs: corridor stations, station_edges, shelters, demo rescue messages (Thai)
@@ -217,14 +216,16 @@ Rules first; the ML forecast is an add-on.
 
 Python 3.12. Local dev: `docker compose up -d` (Postgres) → `python -m common.migrate` → `python -m ingest.run`.
 
-**Web (`/web`, built 2026-10-16):**
+**Two repos (split 2026-10-17):** this one (`namma`, backend) and **`namma-web`** (the web app, history kept). Clone them side by side: `../namma-web` is the default for the API's `WEB_DIST` (`../namma-web/dist`), `ingest.export_web_fixtures` and `infra/deploy/push.sh`. A contract change is a PR in each repo, linked, changing `docs/api.md` here and `src/api/types.ts` + the mock there together.
+
+**Web (`namma-web` repo, built 2026-10-16):**
 - **Stack:** Vite + React 19 + TS + Tailwind 4, react-router (`HashRouter`), TanStack Query, react-leaflet, Recharts.
-- **Run:** `cd web && npm install && npm run dev`, then open http://localhost:5173. Checks: `npm run typecheck && npm test && npm run build`.
-- **API contract:** `docs/api.md` + `web/src/api/types.ts`.
-- **Mock mode (default, `VITE_API_MODE=mock`):** an in-app mock backend (`web/src/api/mock/`) serves real ThaiWater fixtures. Refresh them with `python -m ingest.export_web_fixtures`. Mock state lives in localStorage, so a chat tab and a dashboard tab share it (rehearses demo step 4). `?demo=1` opens a demo panel: role switch, simulate a tier, inject a ticket, reset.
+- **Run:** `cd ../namma-web && npm ci && npm run dev`, then open http://localhost:5173. Checks: `npm run typecheck && npm test && npm run build`.
+- **API contract:** `docs/api.md` (here) + `src/api/types.ts` (namma-web).
+- **Mock mode (default, `VITE_API_MODE=mock`):** an in-app mock backend (`src/api/mock/`) serves real ThaiWater fixtures. Refresh them with `python -m ingest.export_web_fixtures`. Mock state lives in localStorage, so a chat tab and a dashboard tab share it (rehearses demo step 4). `?demo=1` opens a demo panel: role switch, simulate a tier, inject a ticket, reset.
 - **Real backend:** `VITE_API_MODE=http` proxies `/api` to `:8000`. Mock code is excluded from that build.
 - **Why `HashRouter`, no service workers:** OBS can't rewrite deep links, and the LIFF browser has no service workers.
-- **Thai text** lives in `web/src/copy.ts`.
+- **Thai text** lives in `src/copy.ts` (namma-web).
 
 ## 11. Huawei Cloud: how to work with it
 
@@ -274,8 +275,8 @@ References (verify links before relying on them):
 - [ ] LINE OA plan push-message quota (Thailand)
 - [ ] Does the $200 credit cover all services or only MaaS?
 - [x] Demo script §15 Bang Rakam: works. Answers use the nearest of all ~800 live stations (Y.64/Y.16 on the Yom), and `get_nearest_stations` fetches 2 days of history on demand so the trend is real. Only upstream edges and the ML forecast are corridor-only.
-- [ ] **Web hosting.** In AP-Bangkok, OBS's default domain adds `Content-Disposition: attachment`, so pages download instead of rendering. We need a custom domain + HTTPS (LIFF and geolocation need HTTPS too). Recommendation: serve `web/dist` from the ECS FastAPI app on the same origin as `/api` (one cert, no CORS); keep OBS+CDN as a later upgrade.
-- [ ] **Web login.** Recommendation: LIFF on a LINE Login channel under the **same provider** as the OA channel, so the userId matches. The backend verifies the ID token. `initSession()` in `web/src/auth/session.ts` is the hook point. Publish the channel or add judges as Testers before the demo.
+- [ ] **Web hosting.** In AP-Bangkok, OBS's default domain adds `Content-Disposition: attachment`, so pages download instead of rendering. We need a custom domain + HTTPS (LIFF and geolocation need HTTPS too). Recommendation: serve namma-web's `dist` from the ECS FastAPI app on the same origin as `/api` (one cert, no CORS); keep OBS+CDN as a later upgrade.
+- [ ] **Web login.** Recommendation: LIFF on a LINE Login channel under the **same provider** as the OA channel, so the userId matches. The backend verifies the ID token. `initSession()` in namma-web `src/auth/session.ts` is the hook point. Publish the channel or add judges as Testers before the demo.
 - [ ] **Responder access + audit.** `users.role` or an allowlist, plus a `ticket_events` table. Tickets hold health data. The rest of the schema gaps are listed in `docs/api.md`.
 
 ## 15. Demo script (build toward this)

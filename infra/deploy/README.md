@@ -22,10 +22,12 @@ ssh root@<EIP> 'NAMMA_DOMAIN=<EIP>.sslip.io bash /root/deploy/setup_ecs.sh'
 scp .env root@<EIP>:/opt/namma/.env      # first time only, then edit it on the VM:
 #   DATABASE_URL = the line from /root/namma_db_url.txt
 #   SCHEDULER=1, DEMO_MODE=0 after the demo, RESPONDER_TOKEN=<long random string>
+(cd ../namma-web && npm ci && VITE_API_MODE=http npm run build)   # web app, from the namma-web repo
 bash infra/deploy/push.sh root@<EIP>
 ```
-`push.sh` uploads the repo (without `.env`, `.venv`, `var`), installs requirements, runs migrations,
-does one ingest and the seed, then restarts the service.
+`push.sh` uploads the web build to `/opt/namma-web/dist` (served on the same origin as `/api`; override the
+local path with `WEB_BUILD=...`), then the repo (without `.env`, `.venv`, `var`), installs requirements,
+runs migrations, does one ingest and the seed, then restarts the service.
 
 After the first push, load history once (optional, slow):
 `ssh root@<EIP> 'cd /opt/namma && sudo -u namma .venv/bin/python -m ingest.backfill --from 2026'`
@@ -37,7 +39,7 @@ turn on "Use webhook", turn off auto-reply messages. Click Verify.
 ## 5. Check
 - `https://<EIP>.sslip.io/healthz` returns 200. It returns 503 if no risk refresh in 30 min, so point an uptime check at it.
 - Logs: `journalctl -u namma -f`
-- Dashboard: `https://<EIP>.sslip.io/web/dashboard.html?token=<RESPONDER_TOKEN>`
+- Web app: `https://<EIP>.sslip.io/#/chat`, map `#/map`, responder dashboard `#/dashboard`
 
 ## Moving to RDS later
 Create RDS for PostgreSQL in the same VPC, set `DATABASE_URL` in `/opt/namma/.env`, run
