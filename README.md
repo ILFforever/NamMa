@@ -15,6 +15,14 @@ docker compose up -d                  # Postgres on :5432
 .venv/bin/pytest -q
 ```
 
+Web app (mock API with real ThaiWater fixtures; see `docs/api.md` for the contract):
+
+```bash
+cd web && npm install && npm run dev  # http://localhost:5173  (add #/map?demo=1 for the demo panel)
+npm run typecheck && npm test && npm run build
+python -m ingest.export_web_fixtures  # refresh web/src/api/mock/fixtures from live ThaiWater (repo root)
+```
+
 History: `python -m ingest.backfill --coverage` (read-only coverage table), then `python -m ingest.backfill --from 2018`.
 
 ## Run the app
