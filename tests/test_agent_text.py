@@ -1,0 +1,88 @@
+import base64
+import hashlib
+import hmac
+from datetime import datetime, timedelta
+
+from agent import alerts, answer, llm, memory, triage
+from agent.geo import find_place, haversine_km
+from ingest.thaiwater import BKK
+
+
+def test_haversine():
+    assert round(haversine_km(13.75, 100.5, 14.35, 100.57)) == 67
+
+
+def test_find_place_demo_phrases():
+    p = find_place("บ้านแม่อยู่บางระกำ พิษณุโลก น้ำจะถึงไหม")
+    assert p.province == "พิษณุโลก" and p.amphoe == "บางระกำ"
+    p = find_place("บ้านอยู่บางบาล อยุธยา")
+    assert p.province == "พระนครศรีอยุธยา" and p.amphoe == "บางบาล"
+    assert find_place("สวัสดีค่ะ") is None
+
+
+def test_memory_rules_stated_only():
+    f = memory.extract_rules("ยายติดเตียง บ้านชั้นเดียว ติดคลอง มีรถยนต์")
+    assert f["household"]["immobile"] == ["ยาย"]
+    assert f["house"] == {"stories": 1, "near_water": True}
+    assert f["assets"] == {"car": True}
+    assert memory.extract_rules("แม่อายุ 80 แล้ว") == {}         # age is not a health condition
+    plain, sensitive = memory.split_sensitive(f)
+    assert "household" in sensitive and "household" not in plain
+
+
+def test_location_label():
+    assert memory.location_label("บ้านแม่อยู่บางระกำ") == "บ้านแม่"
+    assert memory.location_label("บ้านผมอยู่เสนา") == "บ้าน"
+    assert memory.location_label("น้ำจะท่วมไหม") is None
+
+
+def test_triage():
+    assert triage.is_danger("น้ำเข้าบ้านแล้ว ยายเดินไม่ได้")
+    assert not triage.is_danger("น้ำจะถึงไหม")
+    f = triage.extract("น้ำเข้าบ้านแล้ว ยายเดินไม่ได้ อยู่กัน 4 คน ขอเรือ", {})
+    assert f["people_count"] == 4 and f["needs"] == ["boat"] and f["urgency"] == "critical"
+    assert any("ยาย" in v for v in f["vulnerable"])
+    f = triage.extract("ช่วยด้วย น้ำเข้าบ้าน", {"household": {"immobile": ["ตา"]}})
+    assert f["urgency"] == "critical" and f["needs"] == ["evacuation"]     # pre-filled from memory
+
+
+def test_numbers_guard():
+    assert llm.numbers_preserved("ระดับ 4.65 ม. ห่าง 3.2 กม.", "น้ำสูง 4.65 ม.")
+    assert not llm.numbers_preserved("ระดับ 4.65 ม.", "อีก 2 ชม. น้ำถึง")
+
+
+STATION = {"station_id": 2609, "code": "C.35", "name_th": "บ้านป้อม", "river": "แม่น้ำเจ้าพระยา", "agency": "RID",
+           "distance_km": 3.2, "reading_ts": "2026-10-14T15:00:00+07:00", "level_msl": 4.9, "diff_wl_bank": 0.55,
+           "situation_level": 5, "trend_3h_cm_per_hr": 1.2, "hours_to_bank": None, "risk_tier": "danger",
+           "upstream": [{"oldcode": "C.7A", "name_th": "บ้านบางแก้ว", "risk_tier": "danger", "approx_travel_hours": 10}]}
+
+
+def test_risk_answer_names_source_and_1784():
+    txt = answer.risk_answer("บ้านแม่ อ.บางบาล", True, [STATION], [], {"household": {"immobile": ["ยาย"]}})
+    assert "C.35 บ้านป้อม" in txt and "3.2 กม." in txt and "สูงกว่าตลิ่ง 0.55 ม." in txt
+    assert "1784" in txt and "@1784DDPM" in txt and "ไม่ใช่ระดับน้ำที่บ้านโดยตรง" in txt
+    assert "ยาย" in txt and "C.7A" in txt
+
+
+def test_alert_decide():
+    now = datetime(2026, 10, 14, 12, tzinfo=BKK)
+    assert alerts.decide("watch", None, None, now, False) == "push"
+    assert alerts.decide("normal", None, None, now, False) is None
+    assert alerts.decide("warning", "watch", now, now, False) == "push"
+    assert alerts.decide("warning", "warning", now, now, False) is None
+    assert alerts.decide("danger", "danger", now - timedelta(hours=7), now, False) == "push"
+    assert alerts.decide("danger", "danger", now - timedelta(hours=2), now, False) is None
+    assert alerts.decide("watch", "danger", now, now, False) == "record"
+    assert alerts.decide("warning", "watch", now, now, True) is None     # quiet hours hold non-danger
+    assert alerts.decide("danger", "watch", now, now, True) == "push"
+    assert alerts.in_quiet_hours({"quiet_hours": [22, 6]}, now.replace(hour=23))
+    assert not alerts.in_quiet_hours({"quiet_hours": [22, 6]}, now)
+
+
+def test_line_signature(monkeypatch):
+    from line import client
+    monkeypatch.setenv("LINE_CHANNEL_SECRET", "s3cret")
+    body = b'{"events":[]}'
+    sig = base64.b64encode(hmac.new(b"s3cret", body, hashlib.sha256).digest()).decode()
+    assert client.verify_signature(body, sig)
+    assert not client.verify_signature(body, "nope")

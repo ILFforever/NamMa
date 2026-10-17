@@ -1,0 +1,209 @@
+"""Agent tools (CLAUDE.md §6). Plain functions: typed in, plain dicts out, every number from the DB.
+
+Each takes an open psycopg connection first so the caller controls transactions.
+"""
+import json
+import time
+from datetime import date, datetime, timedelta
+
+from psycopg.rows import dict_row
+
+from agent import gistda, risk
+from agent.geo import haversine_km
+from agent.risk import FRESH_HOURS
+from ingest import store, thaiwater
+
+MAX_STATION_KM = 60      # beyond this a river station says little about a house
+FILL_TTL_S = 1800        # on-demand history fetch at most once per station per 30 min
+_filled: dict[int, float] = {}
+
+
+def _rows(conn, sql: str, params=()) -> list[dict]:
+    with conn.cursor(row_factory=dict_row) as cur:
+        return cur.execute(sql, params).fetchall()
+
+
+def _fill_history(conn, station_ids: list[int]) -> bool:
+    """Only the corridor is backfilled; any other station has just our live readings. Fetch its last
+    ~2 days once so the trend is real. One attempt, no retry: this runs inside a chat reply."""
+    got = False
+    today = date.today()
+    for sid in station_ids:
+        if time.time() - _filled.get(sid, 0) < FILL_TTL_S:
+            continue
+        _filled[sid] = time.time()
+        try:
+            payload = thaiwater.fetch_waterlevel_graph(sid, today - timedelta(days=1), today, attempts=1)
+            store.insert_history(conn, thaiwater.parse_waterlevel_graph(sid, payload))
+            got = True
+        except Exception as e:
+            print(f"history fill failed for {sid}: {e!r}", flush=True)
+    return got
+
+
+def get_nearest_stations(conn, lat: float, lon: float, k: int = 3) -> list[dict]:
+    """Nearest stations with a fresh reading, with level, bank gap, trend, tier and upstream status."""
+    out = _nearest(conn, lat, lon, k)
+    if _fill_history(conn, [s["station_id"] for s in out if s["trend_3h_cm_per_hr"] is None]):
+        risk.compute_all(conn)
+        out = _nearest(conn, lat, lon, k)
+    return out
+
+
+def _nearest(conn, lat: float, lon: float, k: int) -> list[dict]:
+    cutoff = datetime.now().astimezone() - timedelta(hours=FRESH_HOURS)
+    cands = _rows(conn, """
+        SELECT s.id, s.oldcode, s.name_th, s.river, s.province, s.amphoe, s.agency, s.lat, s.lon,
+               r.computed_at, r.level, r.trend_cm_per_hr, r.hours_to_bank, r.risk_tier, r.forecast_json
+        FROM stations s JOIN station_risk r ON r.station_id = s.id
+        WHERE s.lat IS NOT NULL AND (r.forecast_json->>'reading_ts')::timestamptz >= %s""", (cutoff,))
+    for c in cands:
+        c["distance_km"] = round(haversine_km(lat, lon, c["lat"], c["lon"]), 1)
+    near = sorted((c for c in cands if c["distance_km"] <= MAX_STATION_KM), key=lambda c: c["distance_km"])[:k]
+    out = []
+    for c in near:
+        f = c["forecast_json"] or {}
+        up = _rows(conn, """
+            SELECT s.id, s.oldcode, s.name_th, r.risk_tier, e.approx_travel_hours,
+                   (r.forecast_json->>'diff_wl_bank')::float AS diff_wl_bank
+            FROM station_edges e JOIN stations s ON s.id = e.upstream_id
+            LEFT JOIN station_risk r ON r.station_id = s.id WHERE e.downstream_id = %s""", (c["id"],))
+        out.append({
+            "station_id": c["id"], "code": c["oldcode"], "name_th": c["name_th"], "river": c["river"],
+            "province": c["province"], "amphoe": c["amphoe"], "agency": c["agency"],
+            "distance_km": c["distance_km"], "lat": c["lat"], "lon": c["lon"],
+            "reading_ts": f.get("reading_ts"), "level_msl": c["level"],
+            "diff_wl_bank": f.get("diff_wl_bank"), "situation_level": f.get("situation_level"),
+            "trend_3h_cm_per_hr": c["trend_cm_per_hr"], "trend_12h_cm_per_hr": f.get("trend_12h_cm_per_hr"),
+            "hours_to_bank": c["hours_to_bank"], "risk_tier": c["risk_tier"], "upstream": up,
+            "model": (f.get("model") or {}).get("horizons"),
+        })
+    return out
+
+
+def get_forecast(conn, station_id: int) -> dict | None:
+    rows = _rows(conn, "SELECT * FROM station_risk WHERE station_id = %s", (station_id,))
+    return rows[0] if rows else None
+
+
+def check_flood_extent(lat: float, lon: float) -> dict | None:
+    return gistda.check_flood_extent(lat, lon)
+
+
+def get_flood_recurrence(lat: float, lon: float) -> dict | None:
+    return gistda.get_flood_recurrence(lat, lon)
+
+
+def find_shelters(conn, lat: float, lon: float, needs: dict | None = None, k: int = 2) -> list[dict]:
+    """Nearest shelters; needs = {'patients': bool, 'pets': bool} filters on what they accept."""
+    needs = needs or {}
+    rows = _rows(conn, "SELECT * FROM shelters")
+    rows = [r for r in rows if (not needs.get("patients") or r["accepts_patients"])
+            and (not needs.get("pets") or r["accepts_pets"])]
+    for r in rows:
+        r["distance_km"] = round(haversine_km(lat, lon, r["lat"], r["lon"]), 1)
+    return sorted(rows, key=lambda r: r["distance_km"])[:k]
+
+
+# --- users & memory ------------------------------------------------------------
+
+def get_or_create_user(conn, external_id: str, display_name: str | None = None) -> int:
+    """external_id is the LINE userId, or 'web:<uuid>' for anonymous web chat."""
+    row = conn.execute(
+        "INSERT INTO users (line_user_id, display_name) VALUES (%s, %s) ON CONFLICT (line_user_id) "
+        "DO UPDATE SET display_name = COALESCE(EXCLUDED.display_name, users.display_name) RETURNING id",
+        (external_id, display_name)).fetchone()
+    conn.execute("INSERT INTO user_memory (user_id) VALUES (%s) ON CONFLICT DO NOTHING", (row[0],))
+    return row[0]
+
+
+def has_consent(conn, user_id: int, kind: str = "sensitive_memory") -> bool:
+    row = conn.execute("SELECT granted FROM consents WHERE user_id = %s AND kind = %s ORDER BY ts DESC LIMIT 1",
+                       (user_id, kind)).fetchone()
+    return bool(row and row[0])
+
+
+def record_consent(conn, user_id: int, granted: bool, kind: str = "sensitive_memory") -> None:
+    conn.execute("INSERT INTO consents (user_id, kind, granted) VALUES (%s, %s, %s)", (user_id, kind, granted))
+
+
+def get_user_profile(conn, user_id: int) -> dict:
+    mem = _rows(conn, "SELECT household, house, assets, needs, history, preferences FROM user_memory WHERE user_id = %s",
+                (user_id,))
+    locs = _rows(conn, "SELECT id, label, lat, lon, notes FROM user_locations WHERE user_id = %s ORDER BY id", (user_id,))
+    pending = _rows(conn, "SELECT facts FROM pending_facts WHERE user_id = %s", (user_id,))
+    return {"memory": mem[0] if mem else {}, "locations": locs,
+            "pending": pending[0]["facts"] if pending else {}, "consent": has_consent(conn, user_id)}
+
+
+def merge_memory(conn, user_id: int, facts: dict) -> None:
+    """facts: {field: {key: value}} for the user_memory JSONB columns. Shallow merge per field."""
+    for field, vals in facts.items():
+        if field not in ("household", "house", "assets", "needs", "history", "preferences") or not vals:
+            continue
+        conn.execute(f"UPDATE user_memory SET {field} = {field} || %s::jsonb, updated_at = now() WHERE user_id = %s",
+                     (json.dumps(vals, ensure_ascii=False), user_id))
+
+
+def set_pending(conn, user_id: int, facts: dict) -> None:
+    conn.execute("INSERT INTO pending_facts (user_id, facts) VALUES (%s, %s) ON CONFLICT (user_id) "
+                 "DO UPDATE SET facts = pending_facts.facts || EXCLUDED.facts, ts = now()",
+                 (user_id, json.dumps(facts, ensure_ascii=False)))
+
+
+def pop_pending(conn, user_id: int) -> dict:
+    row = conn.execute("DELETE FROM pending_facts WHERE user_id = %s RETURNING facts", (user_id,)).fetchone()
+    return row[0] if row else {}
+
+
+def forget(conn, user_id: int, what: str) -> None:
+    """what: 'all', a memory field name, or 'location:<id>'."""
+    if what == "all":
+        conn.execute("UPDATE user_memory SET household='{}', house='{}', assets='{}', needs='{}', history='{}', "
+                     "updated_at=now() WHERE user_id = %s", (user_id,))
+        conn.execute("DELETE FROM user_locations WHERE user_id = %s", (user_id,))
+        conn.execute("DELETE FROM pending_facts WHERE user_id = %s", (user_id,))
+    elif what.startswith("location:"):
+        conn.execute("DELETE FROM user_locations WHERE user_id = %s AND id = %s", (user_id, int(what.split(":")[1])))
+    elif what in ("household", "house", "assets", "needs", "history"):
+        conn.execute(f"UPDATE user_memory SET {what} = '{{}}', updated_at = now() WHERE user_id = %s", (user_id,))
+
+
+def save_location(conn, user_id: int, label: str, lat: float, lon: float, notes: str | None = None) -> int:
+    """Upsert by label so "บ้านแม่" said twice stays one place."""
+    row = conn.execute("SELECT id FROM user_locations WHERE user_id = %s AND label = %s", (user_id, label)).fetchone()
+    if row:
+        conn.execute("UPDATE user_locations SET lat = %s, lon = %s, notes = COALESCE(%s, notes) WHERE id = %s",
+                     (lat, lon, notes, row[0]))
+        return row[0]
+    return conn.execute("INSERT INTO user_locations (user_id, label, lat, lon, notes) VALUES (%s, %s, %s, %s, %s) "
+                        "RETURNING id", (user_id, label, lat, lon, notes)).fetchone()[0]
+
+
+def create_rescue_ticket(conn, user_id: int | None, raw_text: str, lat: float | None, lon: float | None,
+                         people_count: int | None, vulnerable: list, needs: list, urgency: str,
+                         status: str = "open") -> int:
+    return conn.execute(
+        "INSERT INTO rescue_tickets (user_id, raw_text, lat, lon, people_count, vulnerable, needs, urgency, status) "
+        "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s) RETURNING id",
+        (user_id, raw_text, lat, lon, people_count, json.dumps(vulnerable, ensure_ascii=False),
+         json.dumps(needs, ensure_ascii=False), urgency, status)).fetchone()[0]
+
+
+def update_ticket(conn, ticket_id: int, **fields) -> None:
+    allowed = {k: v for k, v in fields.items() if k in ("status", "lat", "lon", "people_count", "urgency")}
+    if not allowed:
+        return
+    sets = ", ".join(f"{k} = %s" for k in allowed)
+    conn.execute(f"UPDATE rescue_tickets SET {sets}, updated_at = now() WHERE id = %s", (*allowed.values(), ticket_id))
+
+
+def log_message(conn, user_id: int, channel: str, role: str, content: str) -> int:
+    return conn.execute("INSERT INTO messages (user_id, channel, role, content) VALUES (%s, %s, %s, %s) RETURNING id",
+                        (user_id, channel, role, content)).fetchone()[0]
+
+
+def recent_messages(conn, user_id: int, n: int = 10) -> list[dict]:
+    rows = _rows(conn, "SELECT role, content FROM messages WHERE user_id = %s AND role IN ('user', 'assistant') "
+                       "ORDER BY ts DESC LIMIT %s", (user_id, n))
+    return rows[::-1]

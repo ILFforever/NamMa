@@ -7,3 +7,6 @@ __pycache__/
 node_modules/
 dist/
 .DS_Store
+
+# Trained LightGBM models (~24 MB). Rebuild: python -m model.forecast train. push.sh ships them.
+model/artifacts/*.txt

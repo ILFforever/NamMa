@@ -18,16 +18,24 @@ MAX_HISTORY_DAYS = 366        # longer ranges are silently truncated by the API
 _last_call = 0.0
 
 
-def _get(path: str, params: dict | None = None) -> dict:
+def _get(path: str, params: dict | None = None, attempts: int = 3) -> dict:
     global _last_call
-    wait = MIN_INTERVAL_S - (time.monotonic() - _last_call)
-    if wait > 0:
-        time.sleep(wait)
-    _last_call = time.monotonic()
-    r = httpx.get(f"{BASE}/{path}", params=params, timeout=60,
-                  headers={"User-Agent": "NamMa flood assistant (hackathon)"})
-    r.raise_for_status()
-    return r.json()
+    for i in range(attempts):
+        wait = MIN_INTERVAL_S - (time.monotonic() - _last_call)
+        if wait > 0:
+            time.sleep(wait)
+        _last_call = time.monotonic()
+        try:
+            r = httpx.get(f"{BASE}/{path}", params=params, timeout=60,
+                          headers={"User-Agent": "NamMa flood assistant (hackathon)"})
+            r.raise_for_status()
+            return r.json()
+        except (httpx.TransportError, httpx.HTTPStatusError) as e:
+            # One slow reply shouldn't kill a multi-hour backfill; back off and retry.
+            if i == attempts - 1:
+                raise
+            print(f"thaiwater {path} failed ({e!r}), retrying", flush=True)
+            time.sleep(10 * (i + 1))
 
 
 def fetch_waterlevel_load() -> dict:
@@ -38,13 +46,13 @@ def fetch_rain_24h() -> dict:
     return _get("rain_24h")
 
 
-def fetch_waterlevel_graph(station_id: int, start: date, end: date) -> dict:
+def fetch_waterlevel_graph(station_id: int, start: date, end: date, attempts: int = 3) -> dict:
     return _get("waterlevel_graph", {
         "station_type": "tele_waterlevel",
         "station_id": station_id,
         "start_date": start.isoformat(),
         "end_date": end.isoformat(),
-    })
+    }, attempts=attempts)
 
 
 def fetch_waterlevel_history(station_id: int, start: date, end: date) -> list[dict]:

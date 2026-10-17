@@ -1,0 +1,4 @@
+# Deploy files run on Linux: keep LF even on Windows checkouts.
+*.sh text eol=lf
+*.service text eol=lf
+Caddyfile text eol=lf

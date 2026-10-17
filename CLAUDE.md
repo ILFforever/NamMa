@@ -193,7 +193,7 @@ Rules first; the ML forecast is an add-on.
 
 ## 9. Forecast model (stretch goal, gated on data)
 
-**Go/no-go (day 2):** history endpoint returns ≥ 2–3 years for the demo-basin stations → GO. Otherwise ship rules only and call ML "future work". *Early signal: likely GO (HII station back to 2012, RID C.35 has 2025). Confirm with `python -m ingest.backfill --coverage`.*
+**Go/no-go (day 2):** history endpoint returns ≥ 2–3 years for the demo-basin stations → GO. Otherwise ship rules only and call ML "future work". **Decision (2026-10-17): GO.** 2018–2026 backfilled for the corridor. `python -m model.forecast train` beats persistence at every horizon for all 7 modelled stations on Sept–Oct 2026 held out (C.35 +12 h: 5.5 cm vs 14.3 cm). Report: `model/artifacts/report.json`. Rule backtest (`model.backtest`): warning 4–27 h before each over-bank onset.
 
 - Target: station level at +6h / +12h / +24h / +48h.
 - Features: own lagged levels and trend, upstream levels with lags based on `station_edges` travel times, upstream rain sums (**only from our own logging; no rain history exists, see 4.3**, so likely drop rain from training), discharge below the Chao Phraya Dam (C.13).
@@ -205,10 +205,11 @@ Rules first; the ML forecast is an add-on.
 ```
 /common     config (.env), DB connection, migration runner
 /ingest     ThaiWater client, ingest job, history backfill
-/agent      tools, prompt assembly, memory extraction, triage
+/agent      tools, risk rules, chat flow, memory extraction, triage, alerts, jobs (scheduler)
+/api        FastAPI app: LINE webhook, web API, responder API, demo endpoints, serves /web
 /line       LINE webhook adapter + push sender (Messaging API)
 /web        Static web app: chat, map, responder dashboard (LINE Login)
-/model      feature building + LightGBM training
+/model      travel times, LightGBM forecast (train/score), rule backtest; artifacts/ not in git
 /infra      SQL migrations, hcloud scripts, deploy scripts
 /data       Curated CSVs: corridor stations, station_edges, shelters, demo rescue messages (Thai)
 /tests      pytest; fixtures are trimmed real API responses
@@ -257,13 +258,13 @@ References (verify links before relying on them):
 
 - [ ] Huawei Bangkok region ID; MaaS availability and model list there; function-calling support
 - [x] `waterlevel_graph` datum: same as `waterlevel_msl` (§4.2)
-- [~] `waterlevel_graph` history depth: back to 2012 for some HII stations, ≤366 days per call. Per-station coverage table still to run.
+- [x] `waterlevel_graph` history depth: ≤366 days per call; corridor backfilled 2018–2026 (RID from ~2020, HII from 2018–19).
 - [x] Rainfall history endpoint: none (§4.3). Log our own from day 0.
 - [ ] GISTDA response shapes (flood-extent, recurrence)
 - [x] ~~FunctionGraph runtime / cold start~~: moot, we run on ECS (§3)
 - [ ] LINE OA plan push-message quota (Thailand)
 - [ ] Does the $200 credit cover all services or only MaaS?
-- [ ] Demo script §15 uses Bang Rakam (Phitsanulok), which is on the **Yom**, outside the Chao Phraya corridor. Either add Yom stations or move the demo household into the corridor (e.g. Bang Ban, Ayutthaya, next to C.36, which is over bank right now).
+- [x] Demo script §15 Bang Rakam: works. Answers use the nearest of all ~800 live stations (Y.64/Y.16 on the Yom), and `get_nearest_stations` fetches 2 days of history on demand so the trend is real. Only upstream edges and the ML forecast are corridor-only.
 
 ## 15. Demo script (build toward this)
 

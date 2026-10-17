@@ -1,8 +1,8 @@
 upstream_id,downstream_id,approx_travel_hours,note
-2795,2744,,C.2 Nakhon Sawan -> C.13 below Chao Phraya Dam
-2744,2723,,C.13 -> C.3 Sing Buri
-2723,2626,,C.3 -> C.7A Ang Thong
-2626,2609,,C.7A -> C.35 Ayutthaya
-2609,2599,,C.35 -> C.12 Bangkok
-2744,2611,,C.13 -> C.36 via Noi River branch (verify with lag correlation)
-2624,2607,,S.26 Pa Sak -> S.5 Ayutthaya
+2795,2744,12,C.2 Nakhon Sawan -> C.13 below Chao Phraya Dam
+2744,2723,8,C.13 -> C.3 Sing Buri
+2723,2626,12,C.3 -> C.7A Ang Thong
+2626,2609,22,C.7A -> C.35 Ayutthaya
+2609,2599,19,C.35 -> C.12 Bangkok
+2744,2611,12,C.13 -> C.36 via Noi River branch (verify with lag correlation)
+2624,2607,22,S.26 Pa Sak -> S.5 Ayutthaya

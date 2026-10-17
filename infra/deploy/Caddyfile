@@ -1,0 +1,6 @@
+# HTTPS in front of the app. LINE webhooks require HTTPS with a valid certificate; Caddy gets one
+# from Let's Encrypt automatically. No domain? Use <EIP>.sslip.io (e.g. 1.2.3.4.sslip.io).
+{$NAMMA_DOMAIN} {
+	encode gzip
+	reverse_proxy 127.0.0.1:8000
+}

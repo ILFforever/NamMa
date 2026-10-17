@@ -1,0 +1,47 @@
+# Deploy to one Huawei ECS VM
+
+One process does everything: FastAPI (LINE webhook, web API, dashboard) plus the 10-minute
+ingest → risk → alerts scheduler. Caddy terminates HTTPS. Postgres runs on the same VM by default.
+
+**Creating the VM spends the $200 credit. Ask the team first (CLAUDE.md §12).**
+
+## 1. Console (one time)
+- ECS: Ubuntu 24.04, smallest general-purpose size with 2 GB RAM, **pay-per-use**, AP-Bangkok.
+- EIP: **billed by traffic**.
+- Security group: inbound 22 from your IP only, 80 and 443 from anywhere. Never open 5432 or 8000.
+- No domain? Use `<EIP>.sslip.io` (e.g. `1.2.3.4.sslip.io`). It resolves to the IP, and Let's Encrypt issues certificates for it.
+
+## 2. Set up the VM
+```bash
+scp -r infra/deploy root@<EIP>:/root/deploy
+ssh root@<EIP> 'NAMMA_DOMAIN=<EIP>.sslip.io bash /root/deploy/setup_ecs.sh'
+```
+
+## 3. Ship the code (and every later update)
+```bash
+scp .env root@<EIP>:/opt/namma/.env      # first time only, then edit it on the VM:
+#   DATABASE_URL = the line from /root/namma_db_url.txt
+#   SCHEDULER=1, DEMO_MODE=0 after the demo, RESPONDER_TOKEN=<long random string>
+bash infra/deploy/push.sh root@<EIP>
+```
+`push.sh` uploads the repo (without `.env`, `.venv`, `var`), installs requirements, runs migrations,
+does one ingest and the seed, then restarts the service.
+
+After the first push, load history once (optional, slow):
+`ssh root@<EIP> 'cd /opt/namma && sudo -u namma .venv/bin/python -m ingest.backfill --from 2026'`
+
+## 4. Point LINE at it
+LINE Developers console → Messaging API → Webhook URL: `https://<EIP>.sslip.io/line/webhook`,
+turn on "Use webhook", turn off auto-reply messages. Click Verify.
+
+## 5. Check
+- `https://<EIP>.sslip.io/healthz` returns 200. It returns 503 if no risk refresh in 30 min, so point an uptime check at it.
+- Logs: `journalctl -u namma -f`
+- Dashboard: `https://<EIP>.sslip.io/web/dashboard.html?token=<RESPONDER_TOKEN>`
+
+## Moving to RDS later
+Create RDS for PostgreSQL in the same VPC, set `DATABASE_URL` in `/opt/namma/.env`, run
+`python -m common.migrate && python -m common.seed`, restart. Copy data with `pg_dump | psql` if needed.
+
+## After the demo
+Stop or delete the ECS VM and release the EIP (CLAUDE.md §3 budget).

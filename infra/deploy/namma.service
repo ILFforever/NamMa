@@ -1,0 +1,18 @@
+# systemd unit for the one NamMa process: API + LINE webhook + 10-min scheduler (SCHEDULER=1 in .env).
+# Installed by setup_ecs.sh to /etc/systemd/system/namma.service.
+[Unit]
+Description=NamMa flood assistant
+After=network-online.target postgresql.service
+Wants=network-online.target
+
+[Service]
+User=namma
+WorkingDirectory=/opt/namma
+# The app loads /opt/namma/.env itself (python-dotenv); set SCHEDULER=1 there.
+# One worker on purpose: the scheduler thread and the in-memory rate limiter must not be duplicated.
+ExecStart=/opt/namma/.venv/bin/uvicorn api.main:app --host 127.0.0.1 --port 8000 --workers 1
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
