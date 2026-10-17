@@ -5,26 +5,22 @@
 import hmac
 import os
 import threading
-import time
-from collections import defaultdict, deque
 from contextlib import asynccontextmanager
-from dataclasses import asdict
 from datetime import datetime, timedelta
 
 from fastapi import Depends, FastAPI, Header, HTTPException
-from fastapi.responses import RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from psycopg.rows import dict_row
-from pydantic import BaseModel
+from pydantic import BaseModel  # noqa: E402
 
-from agent import alerts, chat, jobs, risk
+from agent import alerts, jobs, risk
 from common.config import ROOT
 from common.db import connect
 from line.webhook import router as line_router
+from api import auth, chat_web, stations, tickets
+from api.common import install_error_handlers
 
 DEMO = os.environ.get("DEMO_MODE", "1") == "1"
-CHAT_PER_MIN = 20
-_chat_hits: dict[str, deque] = defaultdict(deque)
 
 
 def responder(authorization: str | None = Header(None)) -> None:
@@ -39,14 +35,6 @@ def responder(authorization: str | None = Header(None)) -> None:
         raise HTTPException(401, "responder token required")
 
 
-def rate_limit(key: str) -> None:
-    hits, now = _chat_hits[key], time.monotonic()
-    while hits and now - hits[0] > 60:
-        hits.popleft()
-    if len(hits) >= CHAT_PER_MIN:
-        raise HTTPException(429, "too many messages, wait a minute")
-    hits.append(now)
-
 
 @asynccontextmanager
 async def lifespan(_app):
@@ -56,7 +44,11 @@ async def lifespan(_app):
 
 
 app = FastAPI(title="NamMa", lifespan=lifespan)
+install_error_handlers(app)
 app.include_router(line_router)
+# Web API contract: docs/api.md (+ web/src/api/types.ts).
+for module in (auth, stations, tickets, chat_web):
+    app.include_router(module.router)
 
 
 def _rows(sql: str, params=()) -> list[dict]:
@@ -73,72 +65,6 @@ def healthz():
     if not fresh:
         raise HTTPException(503, {"ok": False, **{k: str(v) for k, v in row.items()}})
     return {"ok": True, **row}
-
-
-class ChatIn(BaseModel):
-    user_key: str            # browser-generated uuid; stored as users.line_user_id = 'web:<uuid>'
-    text: str | None = None
-    lat: float | None = None
-    lon: float | None = None
-
-
-@app.post("/api/chat")
-def api_chat(body: ChatIn):
-    loc = (body.lat, body.lon) if body.lat is not None and body.lon is not None else None
-    rate_limit(body.user_key)
-    if not body.text and not loc:
-        raise HTTPException(400, "text or lat/lon required")
-    with connect() as conn:
-        r = chat.handle(conn, f"web:{body.user_key}", "web", text=body.text, location=loc)
-    return asdict(r)
-
-
-@app.get("/api/messages")
-def api_messages(user_key: str, after_id: int = 0):
-    """Chat history incl. alerts, so the web app can show pushes without LINE."""
-    return _rows("SELECT m.id, m.channel, m.role, m.content, m.ts FROM messages m JOIN users u ON u.id = m.user_id "
-                 "WHERE u.line_user_id = %s AND m.id > %s ORDER BY m.id", (f"web:{user_key}", after_id))
-
-
-@app.get("/api/stations")
-def api_stations():
-    return _rows("""
-        SELECT s.id, s.oldcode, s.name_th, s.river, s.province, s.agency, s.lat, s.lon,
-               r.level, r.trend_cm_per_hr, r.hours_to_bank, r.risk_tier,
-               (r.forecast_json->>'diff_wl_bank')::float AS diff_wl_bank, r.forecast_json->>'reading_ts' AS reading_ts
-        FROM stations s JOIN station_risk r ON r.station_id = s.id WHERE s.lat IS NOT NULL""")
-
-
-@app.get("/api/stations/{station_id}/readings")
-def api_readings(station_id: int, hours: int = 72):
-    since = datetime.now().astimezone() - timedelta(hours=min(hours, 24 * 30))
-    return _rows("SELECT ts, level_msl, diff_wl_bank, discharge FROM waterlevel_readings "
-                 "WHERE station_id = %s AND ts >= %s ORDER BY ts", (station_id, since))
-
-
-@app.get("/api/shelters")
-def api_shelters():
-    return _rows("SELECT * FROM shelters ORDER BY id")
-
-
-@app.get("/api/tickets", dependencies=[Depends(responder)])
-def api_tickets():
-    return _rows("""
-        SELECT t.*, u.display_name FROM rescue_tickets t LEFT JOIN users u ON u.id = t.user_id
-        ORDER BY (t.status IN ('done', 'cancelled')), (t.urgency = 'critical') DESC, t.created_at DESC LIMIT 200""")
-
-
-class TicketPatch(BaseModel):
-    status: str
-
-
-@app.patch("/api/tickets/{ticket_id}", dependencies=[Depends(responder)])
-def api_ticket_patch(ticket_id: int, body: TicketPatch):
-    if body.status not in ("unconfirmed", "open", "assigned", "done", "cancelled"):
-        raise HTTPException(400, "bad status")
-    with connect() as conn:
-        conn.execute("UPDATE rescue_tickets SET status = %s, updated_at = now() WHERE id = %s", (body.status, ticket_id))
-    return {"ok": True}
 
 
 class Simulate(BaseModel):
@@ -171,9 +97,7 @@ def api_refresh():
     return {"stations": len(res)}
 
 
-@app.get("/")
-def index():
-    return RedirectResponse("/web/index.html")
-
-
-app.mount("/web", StaticFiles(directory=ROOT / "web", html=True), name="web")
+# The built web app (cd web && npm run build) on the same origin as /api: one cert, no CORS.
+WEB_DIST = ROOT / "web" / "dist"
+if WEB_DIST.is_dir():
+    app.mount("/", StaticFiles(directory=WEB_DIST, html=True), name="web")

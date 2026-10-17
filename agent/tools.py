@@ -182,16 +182,18 @@ def save_location(conn, user_id: int, label: str, lat: float, lon: float, notes:
 
 def create_rescue_ticket(conn, user_id: int | None, raw_text: str, lat: float | None, lon: float | None,
                          people_count: int | None, vulnerable: list, needs: list, urgency: str,
-                         status: str = "open") -> int:
+                         status: str = "open", channel: str = "line", place_label: str | None = None) -> int:
+    """channel is 'line' or 'web'; place_label is the place in words ("อ.บางบาล จ.พระนครศรีอยุธยา") if known."""
     return conn.execute(
-        "INSERT INTO rescue_tickets (user_id, raw_text, lat, lon, people_count, vulnerable, needs, urgency, status) "
-        "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s) RETURNING id",
+        "INSERT INTO rescue_tickets (user_id, raw_text, lat, lon, people_count, vulnerable, needs, urgency, status, "
+        "channel, place_label) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s) RETURNING id",
         (user_id, raw_text, lat, lon, people_count, json.dumps(vulnerable, ensure_ascii=False),
-         json.dumps(needs, ensure_ascii=False), urgency, status)).fetchone()[0]
+         json.dumps(needs, ensure_ascii=False), urgency, status, channel, place_label)).fetchone()[0]
 
 
 def update_ticket(conn, ticket_id: int, **fields) -> None:
-    allowed = {k: v for k, v in fields.items() if k in ("status", "lat", "lon", "people_count", "urgency")}
+    allowed = {k: v for k, v in fields.items()
+               if k in ("status", "lat", "lon", "people_count", "urgency", "place_label", "contact_phone")}
     if not allowed:
         return
     sets = ", ".join(f"{k} = %s" for k in allowed)
