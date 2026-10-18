@@ -1,20 +1,18 @@
 #!/usr/bin/env bash
-# Ship the repo to the VM and restart:  bash infra/deploy/push.sh root@1.2.3.4
-# First push: also copy your .env (scp .env root@host:/opt/namma/.env) and fix DATABASE_URL in it.
+# Ship this working tree (and the web build, if present) to the VM:  bash infra/deploy/push.sh deploy@1.2.3.4
+# Logs in as the `deploy` user (see harden.sh) and hands the code to namma-deploy, which installs, migrates,
+# restarts and rolls back if the app does not come up. CI does the same after green tests on main (.github/workflows/deploy.yml).
 set -euo pipefail
-HOST="${1:?usage: push.sh user@host}"
+HOST="${1:?usage: push.sh deploy@host}"
+KEY="${NAMMA_SSH_KEY:-$HOME/.ssh/namma_deploy_ci}"   # the deploy user's key; falls back to your agent/default keys
+ssh() { if [ -f "$KEY" ]; then command ssh -i "$KEY" -o IdentitiesOnly=yes "$@"; else command ssh "$@"; fi; }
 cd "$(dirname "$0")/../.."
-# Web app: the built namma-web repo (npm run build there first). The API serves /opt/namma-web/dist (WEB_DIST default),
-# so ship it before the restart below. Skipped when there is no build.
+# Web app: the built namma-web repo (npm run build there first). Skipped when there is no build.
 WEB_BUILD="${WEB_BUILD:-../namma-web/dist}"
 if [ -d "$WEB_BUILD" ]; then
-  tar -C "$WEB_BUILD" -czf - . | ssh "$HOST" 'rm -rf /opt/namma-web/dist && mkdir -p /opt/namma-web/dist &&
-    tar -xzf - -C /opt/namma-web/dist && chown -R namma:namma /opt/namma-web'
+  tar -C "$WEB_BUILD" -czf - . | ssh "$HOST" sudo namma-deploy web
 else
-  echo "no web build at $WEB_BUILD (cd ../namma-web && npm ci && npm run build); shipping the API only" >&2
+  echo "no web build at $WEB_BUILD (cd ../namma-web && npm ci && VITE_API_MODE=http npm run build); shipping the API only" >&2
 fi
-tar --exclude=.git --exclude=.venv --exclude=var --exclude=.env --exclude=__pycache__ --exclude=.pytest_cache \
-    -czf - . | ssh "$HOST" 'tar -xzf - -C /opt/namma && chown -R namma:namma /opt/namma && cd /opt/namma &&
-  sudo -u namma bash -c "test -d .venv || python3 -m venv .venv; .venv/bin/pip install -q -r requirements.txt &&
-  .venv/bin/python -m common.migrate && .venv/bin/python -m ingest.run && .venv/bin/python -m common.seed" &&
-  systemctl restart namma && sleep 3 && systemctl --no-pager status namma | head -5'
+tar --exclude=.git --exclude=.venv --exclude=./var --exclude=.env --exclude=__pycache__ --exclude=.pytest_cache \
+    --exclude=node_modules --exclude=./web -czf - . | ssh "$HOST" sudo namma-deploy api
