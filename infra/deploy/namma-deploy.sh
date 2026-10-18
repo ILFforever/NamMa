@@ -23,7 +23,7 @@ replace_code() {               # $1 = dir with the new code; keeps .env, .venv a
   find "$APP" -mindepth 1 -maxdepth 1 ! -name .env ! -name .venv ! -name var -exec rm -rf {} +
   cp -a "$1"/. "$APP"/
   mkdir -p "$APP/model/artifacts"
-  cp -an "$models"/. "$APP/model/artifacts"/ && rm -rf "$models"
+  cp -a --update=none "$models"/. "$APP/model/artifacts"/ && rm -rf "$models"
   chown -R namma:namma "$APP"
 }
 
