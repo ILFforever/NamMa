@@ -74,6 +74,12 @@ def test_question_about_a_station_returns_reply_sources_and_quick_replies(seeded
     station = next(s for s in d["sources"] if s["type"] == "station")
     assert station["station_id"] == STATION and station["code"] == "T.1" and station["name_th"] == "สถานีทดสอบ"
     assert 0 < station["distance_km"] < 60 and station["observed_at"]
+    # The reading behind the web StationCard: same numbers as the DB, bank = level - diff.
+    assert station["river"] == "แม่น้ำทดสอบ" and station["agency"] == "RID"
+    assert station["level_msl"] == pytest.approx(4.03) and station["diff_wl_bank"] == pytest.approx(-1.47)
+    assert station["bank_msl"] == pytest.approx(5.5)
+    assert station["trend_cm_per_hr"] == pytest.approx(1.0, abs=0.01)
+    assert station["risk_tier"] in ("normal", "watch") and station["upstream_over"] == []
     assert any(s["type"] == "shelter" and s["name"] == "ศูนย์ทดสอบ" for s in d["sources"])
     assert d["emergency"] is False and d["ticket_id"] is None
     assert {q["type"] for q in d["quick_replies"]} >= {"location", "message"}
@@ -193,3 +199,32 @@ def test_rate_limit_is_20_per_minute_per_session(seeded):
     r = _chat(client, {"session_id": sid, "message": "สวัสดี"})
     assert r.status_code == 429 and r.json()["error"]["code"] == "rate_limited"
     assert _chat(client, {"session_id": str(uuid.uuid4()), "message": "สวัสดี"}).status_code == 200
+
+
+def test_shelter_question_lists_shelters_near_the_named_place(seeded):
+    client, _ = seeded
+    d = _chat(client, {"session_id": str(uuid.uuid4()), "message": "ศูนย์พักพิงแถวบางบาล อยุธยา มีที่ไหนบ้าง"}).json()["data"]
+    assert "ศูนย์ทดสอบ" in d["reply"] and "บางบาล" in d["reply"] and "1784" in d["reply"]
+    assert [s["type"] for s in d["sources"]] == ["shelter"] and d["sources"][0]["name"] == "ศูนย์ทดสอบ"
+    assert d["emergency"] is False and d["ticket_id"] is None
+
+
+def test_shelter_question_without_a_place_asks_for_one(seeded):
+    client, _ = seeded
+    d = _chat(client, {"session_id": str(uuid.uuid4()), "message": "หาศูนย์พักพิง"}).json()["data"]
+    assert d["sources"] == [] and "แชร์ตำแหน่ง" in d["reply"]
+    assert any(q["type"] == "location" for q in d["quick_replies"])
+
+
+def test_shelter_question_uses_the_saved_place(seeded):
+    client, _ = seeded
+    sid = str(uuid.uuid4())
+    _chat(client, {"session_id": sid, "message": "บ้านแม่อยู่บางบาล อยุธยา น้ำจะถึงไหม"})
+    d = _chat(client, {"session_id": sid, "message": "บ้านแม่ควรอพยพไปที่ไหน"}).json()["data"]
+    assert "บ้านแม่" in d["reply"] and d["sources"][0]["name"] == "ศูนย์ทดสอบ"
+
+
+def test_danger_beats_shelter(seeded):
+    client, _ = seeded
+    d = _chat(client, {"session_id": str(uuid.uuid4()), "message": "ติดอยู่ในบ้าน ไปศูนย์พักพิงไม่ได้ ช่วยด้วย"}).json()["data"]
+    assert d["emergency"] is True and d["ticket_id"] is not None

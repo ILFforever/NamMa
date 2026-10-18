@@ -123,6 +123,11 @@ Request: `{ session_id, message? | postback? | location?: { lat, lon } }`. Exact
 }
 ```
 
+- **Station sources carry the reading** the web StationCard draws, so the card shows exactly the numbers the reply used:
+  `{ type: "station", station_id, code, name_th, distance_km, observed_at, river, agency, amphoe, province,
+  level_msl, diff_wl_bank, bank_msl, trend_cm_per_hr, hours_to_bank, risk_tier, upstream_over: string[] }`.
+  `diff_wl_bank` is signed (+ over bank); `bank_msl` = `level_msl − diff_wl_bank`; `trend_cm_per_hr` is the 3 h trend;
+  `upstream_over` lists upstream station codes already over bank. Any of the reading fields can be null.
 - **Quick replies mirror LINE quick-reply actions** (`message` / `postback` / `location`). The same agent handler can serve the LINE webhook and the web.
 - **Postback data the web sends today:**
   - `consent:sensitive_memory:yes|no` → write `consents`
@@ -136,6 +141,37 @@ Request: `{ session_id, message? | postback? | location?: { lat, lon } }`. Exact
   - Confirm before creating a ticket.
   - Ask for consent before saving vulnerable or health facts.
   - Say when a place is outside the demo basin instead of guessing.
+  - Shelter questions ("ศูนย์พักพิงแถวบางบาล", "บ้านแม่ควรอพยพไปที่ไหน") list up to 3 shelters near the named place,
+    else the saved place, with DDPM open/bedridden status, as `shelter` sources. No place known → ask for one.
+
+## Profile
+
+What NamMa remembers about the person chatting, for the web ProfilePanel (CLAUDE.md §7: view and delete).
+Who: the signed-in user, else the anonymous chat from the **`X-Chat-Session: <session_id>`** header (the same
+`session_id` as `POST /api/chat`). An unknown session gets the empty profile; nothing is created.
+
+### `GET /api/profile` → `Profile`
+```jsonc
+{
+  "places": [ { "id": 3, "label": "บ้านแม่", "lat": 14.37, "lon": 100.47, "approx": true,
+                "where": "อ.บางบาล จ.พระนครศรีอยุธยา",
+                "nearest": { "station_id": 2608, "code": "C.37", "name_th": "บ้านบางบาล", "distance_km": 1.3,
+                             "risk_tier": "warning", "diff_wl_bank": -0.06, "observed_at": "…" } } ],
+  "facts": [ { "kind": "household", "text": "ผู้ที่เดินไม่ได้/ติดเตียง: ยาย", "sensitive": true },
+             { "kind": "house", "text": "บ้าน 2 ชั้น", "sensitive": false } ],
+  "consent": { "granted": true, "ts": "…" },   // latest sensitive_memory decision; ts null = never asked
+  "pending_consent": false,                     // a sensitive fact waits for consent (not shown, not saved)
+  "line_linked": false                          // signed in with LINE
+}
+```
+- `approx`: the place was geocoded from its name, not a GPS share. `nearest` is null when no fresh station is within 60 km.
+- `facts[].kind` is one of `household`, `needs` (sensitive), `house`, `assets`, `history`.
+
+### `DELETE /api/profile/places/{id}` → `Profile`
+404 if the place isn't this person's.
+
+### `DELETE /api/profile/facts/{kind}` → `Profile`
+`kind`: a fact kind, or `all` (every fact and place, and any fact waiting for consent).
 
 ## Auth
 

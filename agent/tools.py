@@ -41,10 +41,11 @@ def _fill_history(conn, station_ids: list[int]) -> bool:
     return got
 
 
-def get_nearest_stations(conn, lat: float, lon: float, k: int = 3) -> list[dict]:
-    """Nearest stations with a fresh reading, with level, bank gap, trend, tier and upstream status."""
+def get_nearest_stations(conn, lat: float, lon: float, k: int = 3, fill: bool = True) -> list[dict]:
+    """Nearest stations with a fresh reading, with level, bank gap, trend, tier and upstream status.
+    fill=False skips the on-demand ThaiWater history fetch (for lists that must answer fast)."""
     out = _nearest(conn, lat, lon, k)
-    if _fill_history(conn, [s["station_id"] for s in out if s["trend_3h_cm_per_hr"] is None]):
+    if fill and _fill_history(conn, [s["station_id"] for s in out if s["trend_3h_cm_per_hr"] is None]):
         risk.compute_all(conn)
         out = _nearest(conn, lat, lon, k)
     return out

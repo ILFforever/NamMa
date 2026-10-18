@@ -17,7 +17,7 @@ from agent import alerts, jobs, risk
 from common.config import ROOT
 from common.db import connect
 from line.webhook import router as line_router
-from api import auth, chat_web, stations, tickets
+from api import auth, chat_web, profile, stations, tickets
 from api.common import install_error_handlers
 
 DEMO = os.environ.get("DEMO_MODE", "1") == "1"
@@ -35,7 +35,7 @@ app = FastAPI(title="NamMa", lifespan=lifespan)
 install_error_handlers(app)
 app.include_router(line_router)
 # Web API contract: docs/api.md (+ src/api/types.ts in namma-web).
-for module in (auth, stations, tickets, chat_web):
+for module in (auth, stations, tickets, chat_web, profile):
     app.include_router(module.router)
 
 
