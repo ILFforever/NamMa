@@ -18,7 +18,8 @@ Read the docs for a service before changing it.
 - [ ] Later, optional: OBS bucket (pay-per-use) for raw archives; RDS for PostgreSQL (smallest single node, same VPC)
 
 ## 3. Outside Huawei
-- [ ] LINE Messaging API channel → `LINE_CHANNEL_*`
+- [ ] LINE Messaging API channel → `LINE_CHANNEL_*`. Profile picture: `namma-web/public/brand/namma-line-profile.png`
+      (the logo, บ้านบนคลื่น); OA name "น้ำมา NamMa".
 - [ ] LINE Login channel (same provider as the OA) → `LINE_LOGIN_*`; responders' LINE userIds → `RESPONDER_LINE_IDS`
 - [ ] GISTDA API key (https://api-gateway.gistda.or.th) → `GISTDA_API_KEY`
 
