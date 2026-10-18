@@ -63,10 +63,15 @@ Both come from `station_edges` and are empty for stations without edges (all HII
 
 ## Shelters
 
-### `GET /api/shelters?lat=&lon=&patients=true&pets=true` → `Shelter[]`
-- `{ id, name, lat, lon, capacity, accepts_patients, accepts_pets, phone, distance_km }`
-- `patients`/`pets` filter to shelters that accept them.
-- With lat/lon the list is sorted by distance; without them `distance_km` is null.
+### `GET /api/shelters?lat=&lon=&patients=true&pets=true&limit=50` → `Shelter[]`
+- `{ id, name, lat, lon, capacity, accepts_patients, accepts_pets, phone, distance_km,
+    is_open, current_residents, accepts_bedridden, province, district, source, updated_at }`
+- Source: DDPM's live shelter system (`ingest/shelters.py`, daily, ~12,000 public shelters). Credit ปภ. in the UI.
+- `is_open`: open for admission now (DDPM). `accepts_bedridden`: `true` / `false` / `null` = DDPM doesn't say (most).
+  `accepts_patients` is `true` only when DDPM confirms. `accepts_pets` is always `false`: no source has it.
+- `phone` is null: DDPM coordinator phones are personal data and not stored. Point people to 1784.
+- `patients`/`pets` filter to shelters that accept them. `limit` 1–500 (default 50).
+- With lat/lon the list is the nearest `limit`, sorted by distance; without them `distance_km` is null.
 
 ## Rescue tickets (responder role only)
 

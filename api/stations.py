@@ -127,17 +127,21 @@ def list_shelters(lat: float | None = Query(None, ge=-90, le=90),
                   lon: float | None = Query(None, ge=-180, le=180),
                   patients: bool = False,
                   pets: bool = False,
+                  limit: int = Query(50, ge=1, le=500),
                   conn: psycopg.Connection = Depends(get_db)):
+    """~12,000 DDPM shelters: always capped by limit. accepts_patients is true only when DDPM confirms
+    bedridden patients are accepted; accepts_bedridden keeps DDPM's null (= not stated)."""
     if (lat is None) != (lon is None):
         raise ApiError(400, "bad_request", "lat and lon must be given together")
     rows = conn.execute(
-        "SELECT id, name, lat, lon, capacity, accepts_patients, accepts_pets, phone FROM shelters "
+        "SELECT id, name, lat, lon, capacity, accepts_patients, accepts_pets, phone, is_open, current_residents, "
+        "accepts_bedridden, province, district, source, source_updated_at AS updated_at FROM shelters "
         "WHERE (NOT %s OR accepts_patients) AND (NOT %s OR accepts_pets) ORDER BY id",
         (patients, pets)).fetchall()
     if lat is None:
-        data = [{**r, "distance_km": None} for r in rows]
+        data = [{**r, "distance_km": None} for r in rows[:limit]]
     else:
         ranked = sorted(((haversine_km(lat, lon, r["lat"], r["lon"]), r["id"], r) for r in rows),
                         key=lambda t: (t[0], t[1]))
-        data = [{**r, "distance_km": round(d, 1)} for d, _, r in ranked]
+        data = [{**r, "distance_km": round(d, 1)} for d, _, r in ranked[:limit]]
     return envelope(conn, data)

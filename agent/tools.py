@@ -94,15 +94,42 @@ def get_flood_recurrence(lat: float, lon: float) -> dict | None:
     return gistda.get_flood_recurrence(lat, lon)
 
 
+SHELTER_BOX_DEG = 0.6            # ~65 km: look here first; the whole table only if nothing is that close
+CLOSED_PENALTY_KM = 10.0         # rank an open shelter ahead of a closed one up to 10 km nearer
+UNKNOWN_PATIENTS_PENALTY_KM = 10.0
+NO_PATIENTS_PENALTY_KM = 30.0
+
+
+def _patients_ok(r: dict) -> bool | None:
+    """True / False / None (DDPM gave no answer). Manual rows only have accepts_patients."""
+    if r.get("accepts_bedridden") is not None:
+        return r["accepts_bedridden"]
+    return True if r.get("accepts_patients") else None
+
+
 def find_shelters(conn, lat: float, lon: float, needs: dict | None = None, k: int = 2) -> list[dict]:
-    """Nearest shelters; needs = {'patients': bool, 'pets': bool} filters on what they accept."""
+    """Best shelters nearby, best first, each with distance_km and patients_ok.
+
+    needs = {'patients': bool}. Ranking is distance plus penalties, never a hard filter, so a household always
+    gets a shelter: closed now (+10 km), patients needed and unknown (+10 km) or refused (+30 km).
+    'pets' is ignored: no source says which shelters take pets.
+    """
     needs = needs or {}
-    rows = _rows(conn, "SELECT * FROM shelters")
-    rows = [r for r in rows if (not needs.get("patients") or r["accepts_patients"])
-            and (not needs.get("pets") or r["accepts_pets"])]
+    sql = "SELECT * FROM shelters WHERE lat BETWEEN %s AND %s AND lon BETWEEN %s AND %s"
+    d = SHELTER_BOX_DEG
+    rows = _rows(conn, sql, (lat - d, lat + d, lon - d, lon + d)) or _rows(conn, "SELECT * FROM shelters")
+
+    def score(r: dict) -> float:
+        s = r["distance_km"] + (CLOSED_PENALTY_KM if r.get("is_open") is False else 0)
+        if needs.get("patients"):
+            ok = r["patients_ok"]
+            s += 0 if ok else NO_PATIENTS_PENALTY_KM if ok is False else UNKNOWN_PATIENTS_PENALTY_KM
+        return s
+
     for r in rows:
         r["distance_km"] = round(haversine_km(lat, lon, r["lat"], r["lon"]), 1)
-    return sorted(rows, key=lambda r: r["distance_km"])[:k]
+        r["patients_ok"] = _patients_ok(r)
+    return sorted(rows, key=lambda r: (score(r), r["distance_km"], r["id"]))[:k]
 
 
 # --- users & memory ------------------------------------------------------------

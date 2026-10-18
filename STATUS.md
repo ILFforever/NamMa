@@ -20,6 +20,7 @@ Two repos in the **NamMa-CEDT** org: `namma-backend` (this one) and `namma-web`.
 | Agent | Rescue triage → ticket, pre-filled from memory, confirm step; a GPS share replaces the place-name location | DB test + live demo |
 | Agent | Web replies: plain text, no duplicate hotline (the UI draws it); LINE unchanged | DB + API tests |
 | Agent | Optional LLM advice, rejected if it adds numbers | Unit test |
+| Data | Real shelters from DDPM's live system, daily: ~12,000, open-now status, accepts bedridden (yes/no/not stated) | Live import; DB + unit tests |
 | Alerts | Push only when tier rises, 6 h repeat at danger, quiet hours, personal tone | DB test; live alerts sent, no duplicates |
 | API | Web API contract (`docs/api.md`): envelope + errors, LINE ID-token login + demo login, sessions, responder role, stations, shelters, tickets with audit trail, chat | 79 backend tests; end to end on live data |
 | App | LINE webhook: signature check, reply, push, quick replies, crash fallback with 1784 | Unit test (not yet tested with real LINE) |
@@ -36,7 +37,6 @@ Two repos in the **NamMa-CEDT** org: `namma-backend` (this one) and `namma-web`.
 | 🔴 | Before the site is public: `DEMO_MODE=0`, no `VITE_DEMO_LOGIN`, set `RESPONDER_LINE_IDS` | Dev | VM |
 | 🟠 | MaaS key; test Thai advice quality and function calling | Owner + dev | Key |
 | 🟠 | GISTDA key; fix the parser against a real response | Owner + dev | Key |
-| 🟠 | Replace sample shelters (`data/shelters.csv`) with real ones | Team | Real list |
 | 🟠 | Rehearse demo step 3 (forced tier jump → alert) on LINE | Dev | LINE live |
 | 🟡 | LINE Login (LIFF) on the web app | Dev | LINE Login channel |
 | 🟡 | Charts for the backtest + model slides | Dev | — |

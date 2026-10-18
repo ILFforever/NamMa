@@ -7,7 +7,8 @@ STATION_SUMMARY_KEYS = {"id", "oldcode", "name_th", "name_en", "lat", "lon", "ri
                         "agency", "is_key_station", "stem_order", "role", "latest", "risk"}
 DETAIL_KEYS = STATION_SUMMARY_KEYS | {"left_bank", "right_bank", "min_bank", "ground_level",
                                       "critical_level_msl", "upstream", "downstream"}
-SHELTER_KEYS = {"id", "name", "lat", "lon", "capacity", "accepts_patients", "accepts_pets", "phone", "distance_km"}
+SHELTER_KEYS = {"id", "name", "lat", "lon", "capacity", "accepts_patients", "accepts_pets", "phone", "distance_km",
+                "is_open", "current_residents", "accepts_bedridden", "province", "district", "source", "updated_at"}
 
 
 def _station(conn, sid, *, lat=14.0, lon=100.0, stem_order=None, role=None, oldcode=None, **extra):
@@ -307,3 +308,11 @@ def test_seed_loads_stem_order_and_role_from_csv(api):
     assert got[999001] == (None, None)
     # The seeded corridor shows up in the list endpoint.
     assert [s["id"] for s in client.get("/api/stations").json()["data"]] == [2795, 2609, 2611]
+
+
+def test_shelters_limit(api):
+    client, conn = api
+    _shelters(conn)
+    assert _names(client.get("/api/shelters", params={"lat": 14.0, "lon": 100.0, "limit": 2}).json()) == \
+        ["near-patients", "mid-both"]
+    assert client.get("/api/shelters", params={"limit": 0}).status_code == 400
