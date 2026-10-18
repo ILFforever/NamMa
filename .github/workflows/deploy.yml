@@ -1,0 +1,40 @@
+name: Deploy
+
+# After CI passes on a push to main, ship that commit to the ECS VM. Also runnable by hand (Actions → Deploy → Run).
+on:
+  workflow_run:
+    workflows: [CI]
+    types: [completed]
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: deploy
+  cancel-in-progress: false
+
+env:
+  DEPLOY_HOST: 110.238.115.73
+  # The VM's SSH host key, so the runner never trusts a different machine. Refresh with: ssh-keyscan -t ed25519 <host>
+  KNOWN_HOST: "110.238.115.73 ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIB/meTPELgrkda2meYqttYlfDu0ar02fhyfGMoS9ISVi"
+
+jobs:
+  deploy:
+    if: github.event_name == 'workflow_dispatch' || (github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.event == 'push')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.workflow_run.head_sha || github.sha }}
+      - name: SSH key
+        env:
+          KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+        run: |
+          install -d -m 700 ~/.ssh
+          printf '%s\n' "$KEY" > ~/.ssh/id_ed25519 && chmod 600 ~/.ssh/id_ed25519
+          printf '%s\n' "$KNOWN_HOST" > ~/.ssh/known_hosts
+      - name: Ship and restart
+        # namma-deploy rolls back to the previous code if the app does not come up, and then fails this step.
+        run: |
+          tar --exclude=.git -czf - . | ssh -o BatchMode=yes deploy@"$DEPLOY_HOST" sudo namma-deploy api
+      - name: Public health check
+        run: curl -fsS https://"$DEPLOY_HOST".sslip.io/healthz
