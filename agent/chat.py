@@ -150,8 +150,7 @@ def _sources(stations: list[dict], shelters: list[dict], extent: dict | None, re
     main = stations[0]
     worst = max(stations, key=lambda s: rank(s["risk_tier"]))
     shown = [main] + ([worst] if worst is not main and rank(worst["risk_tier"]) > rank(main["risk_tier"]) else [])
-    out = [{"type": "station", "station_id": s["station_id"], "code": s["code"], "name_th": s["name_th"],
-            "distance_km": s["distance_km"], "observed_at": s["reading_ts"]} for s in shown]
+    out = [_station_source(s) for s in shown]
     out += [{"type": "shelter", "shelter_id": sh["id"], "name": sh["name"], "distance_km": sh["distance_km"]}
             for sh in shelters[:1]]
     if extent is not None:
@@ -162,6 +161,20 @@ def _sources(stations: list[dict], shelters: list[dict], extent: dict | None, re
         out.append({"type": "gistda", "kind": "flood_recurrence", "observed_at": None,
                     "summary": f"จุดนี้เคยมีบันทึกน้ำท่วม {recurrence['records']} ครั้ง (2011–2023)"})
     return out
+
+
+def _station_source(s: dict) -> dict:
+    """A station Source with the reading the web StationCard draws. Every number is from get_nearest_stations."""
+    level, diff = s.get("level_msl"), s.get("diff_wl_bank")
+    return {"type": "station", "station_id": s["station_id"], "code": s["code"], "name_th": s["name_th"],
+            "distance_km": s["distance_km"], "observed_at": s["reading_ts"],
+            "river": s.get("river"), "agency": s.get("agency"),
+            "amphoe": s.get("amphoe"), "province": s.get("province"),
+            "level_msl": level, "diff_wl_bank": diff,
+            "bank_msl": round(level - diff, 2) if level is not None and diff is not None else None,
+            "trend_cm_per_hr": s.get("trend_3h_cm_per_hr"), "hours_to_bank": s.get("hours_to_bank"),
+            "risk_tier": s.get("risk_tier"),
+            "upstream_over": [u["oldcode"] for u in s.get("upstream") or [] if u.get("risk_tier") == "danger"]}
 
 
 def _talk(conn, uid: int, t: str) -> Reply:

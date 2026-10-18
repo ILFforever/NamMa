@@ -74,6 +74,12 @@ def test_question_about_a_station_returns_reply_sources_and_quick_replies(seeded
     station = next(s for s in d["sources"] if s["type"] == "station")
     assert station["station_id"] == STATION and station["code"] == "T.1" and station["name_th"] == "สถานีทดสอบ"
     assert 0 < station["distance_km"] < 60 and station["observed_at"]
+    # The reading behind the web StationCard: same numbers as the DB, bank = level - diff.
+    assert station["river"] == "แม่น้ำทดสอบ" and station["agency"] == "RID"
+    assert station["level_msl"] == pytest.approx(4.03) and station["diff_wl_bank"] == pytest.approx(-1.47)
+    assert station["bank_msl"] == pytest.approx(5.5)
+    assert station["trend_cm_per_hr"] == pytest.approx(1.0, abs=0.01)
+    assert station["risk_tier"] in ("normal", "watch") and station["upstream_over"] == []
     assert any(s["type"] == "shelter" and s["name"] == "ศูนย์ทดสอบ" for s in d["sources"])
     assert d["emergency"] is False and d["ticket_id"] is None
     assert {q["type"] for q in d["quick_replies"]} >= {"location", "message"}
