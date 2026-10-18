@@ -45,3 +45,16 @@ def test_parse_rain_24h():
     stations, readings = tw.parse_rain_24h(load("rain_24h.json"))
     assert len(stations) == len(readings) == 2
     assert readings[0]["rain_24h"] == 149.0
+
+
+def test_parse_waterlevel_load_drops_future_readings():
+    payload = load("waterlevel_load.json")
+    now = datetime(2026, 10, 14, 15, 30, tzinfo=tw.BKK)
+    _, readings = tw.parse_waterlevel_load(payload, now=now)
+    assert 39 in {r["station_id"] for r in readings}              # CPY011 reads 15:30, not in the future
+
+    early = now - tw.timedelta(hours=6)                          # pretend it is 09:30: those readings are bogus
+    stations, readings = tw.parse_waterlevel_load(payload, now=early)
+    assert all(r["ts"] <= early + tw.FUTURE_TOLERANCE for r in readings)
+    assert 39 not in {r["station_id"] for r in readings}
+    assert 39 in {s["id"] for s in stations}                      # the station row is still kept
