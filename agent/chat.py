@@ -20,6 +20,8 @@ CONSENT_PROMPT = ("🔒 ขออนุญาตจำข้อมูลนี�
 HELP = ("สวัสดีค่ะ น้ำมาช่วยดูความเสี่ยงน้ำท่วมจากข้อมูลสถานีวัดน้ำจริง\n"
         "ลองพิมพ์ เช่น \"บ้านแม่อยู่บางบาล อยุธยา น้ำจะถึงไหม\" หรือกดแชร์ตำแหน่ง\n"
         "ถ้าอยู่ในอันตราย พิมพ์ \"ช่วยด้วย\" ได้ทันที\n\n" + answer.FOOTER)
+# "Where do I go": shelters, evacuation centres. Checked after danger, so "ติดอยู่ ไปศูนย์พักพิงไม่ได้" is still rescue.
+SHELTER_RE = re.compile(r"ศูนย์พักพิง|ที่พักพิง|ศูนย์อพยพ|จุดอพยพ|อพยพไปที่ไหน|อพยพไปไหน|ไปพักที่ไหน|ที่หลบภัย")
 RISK_WORDS = ("น้ำ", "ท่วม", "ตลิ่ง", "ระดับ", "อพยพ", "เสี่ยง")
 RESCUE_HOTLINE = "🚨 ถ้าอันตรายตอนนี้ โทร 1784 (ปภ.) หรือ 1669 (เจ็บป่วยฉุกเฉิน) ทันที • LINE @1784DDPM"
 # Pictographs and their joiners/variation selectors. Thai (U+0E00 block), "•", "—" and "±" are outside these ranges.
@@ -106,6 +108,8 @@ def _route(conn, uid: int, text: str, location, channel: str = "line") -> Reply:
         return _profile(conn, uid)
     if t.startswith("ลบ"):
         return _forget(conn, uid, t)
+    if SHELTER_RE.search(t):
+        return _shelters(conn, uid, t)
     return _talk(conn, uid, t)
 
 
@@ -212,6 +216,34 @@ def _talk(conn, uid: int, t: str) -> Reply:
     if any(w in t for w in RISK_WORDS):
         return Reply("บอกชื่อตำบล/อำเภอ/จังหวัด หรือกดแชร์ตำแหน่ง แล้วจะเช็คสถานีวัดน้ำใกล้ที่สุดให้ค่ะ", [LOCATION_Q])
     return Reply(HELP, [LOCATION_Q, _q("บ้านอยู่บางบาล อยุธยา น้ำจะถึงไหม")])
+
+
+def _shelters(conn, uid: int, t: str) -> Reply:
+    """Shelters near a named place, else near a saved place (the one named in the text, else the first)."""
+    _, need_consent = _remember(conn, uid, t)
+    prof = tools.get_user_profile(conn, uid)
+    place = find_place(t)
+    if place:
+        lat, lon, label, approx = place.lat, place.lon, place.label, True
+    elif prof["locations"]:
+        loc = next((l for l in prof["locations"] if l["label"] in t), prof["locations"][0])
+        lat, lon, label = loc["lat"], loc["lon"], loc["label"]
+        approx = bool(loc["notes"] and loc["notes"].startswith("ประมาณ"))
+    else:
+        return Reply("บอกชื่อตำบล/อำเภอ หรือกดแชร์ตำแหน่ง แล้วจะหาศูนย์พักพิงที่ใกล้ที่สุดให้ค่ะ\n"
+                     "ถ้าต้องการความช่วยเหลือด่วน โทร 1784 ได้ทันที", [LOCATION_Q])
+    mem = memory.merged_view(prof["memory"], prof["pending"])
+    hh = mem.get("household") or {}
+    need_patients = bool(hh.get("immobile"))
+    shelters = tools.find_shelters(conn, lat, lon, {"patients": need_patients, "pets": bool(hh.get("pets"))}, k=3)
+    text = answer.shelter_answer(label, approx, shelters, need_patients)
+    quick = [LOCATION_Q, PROFILE_Q]
+    if need_consent:
+        text += "\n\n" + CONSENT_PROMPT
+        quick = _consent_quick()
+    sources = [{"type": "shelter", "shelter_id": sh["id"], "name": sh["name"], "distance_km": sh["distance_km"]}
+               for sh in shelters]
+    return Reply(text, quick, sources=sources)
 
 
 def _on_location(conn, uid: int, location) -> Reply:

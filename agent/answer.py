@@ -100,29 +100,53 @@ def advice_lines(tier: str, memory: dict, facts_text: str) -> list[str]:
     return rules
 
 
+def _shelter_desc(s: dict, need_patients: bool) -> str:
+    """'ชื่อ อ.เขต ห่าง 2.3 กม. (เปิดรับอยู่ …, รับผู้ป่วยติดเตียง)': DDPM status, unknown said as unknown."""
+    tags = []
+    if s.get("is_open") is True:
+        cap, cur = s.get("capacity"), s.get("current_residents")
+        tags.append("เปิดรับอยู่" + (f" มีผู้พัก {cur}/{cap} คน" if cap and cur is not None else ""))
+    elif s.get("is_open") is False:
+        tags.append("ยังไม่เปิด")
+    ok = s.get("patients_ok", s.get("accepts_patients") or None)
+    if ok:
+        tags.append("รับผู้ป่วยติดเตียง")
+    elif need_patients:
+        tags.append("ไม่ได้ระบุว่ารับผู้ป่วยติดเตียง" if ok is None else "ไม่รับผู้ป่วยติดเตียง")
+    unit = "เขต" if s.get("province") == "กรุงเทพมหานคร" else "อ."
+    where = f" {unit}{s['district']}" if s.get("district") else ""
+    return f"{s['name']}{where} ห่าง {s['distance_km']:.1f} กม." + (f" ({', '.join(tags)})" if tags else "")
+
+
+SHELTER_SOURCE_NOTE = "ข้อมูลศูนย์พักพิงจาก ปภ. สถานะเปลี่ยนได้ โทร 1784 สอบถามก่อนเดินทาง"
+
+
 def shelter_line(shelters: list[dict], need_patients: bool = False) -> list[str]:
     """The top shelter from tools.find_shelters (best match, not always the nearest) with its DDPM status.
     Unknown is said as unknown: most DDPM shelters don't say whether they take bedridden patients."""
     out = []
     for s in shelters[:1]:
-        tags = []
-        if s.get("is_open") is True:
-            cap, cur = s.get("capacity"), s.get("current_residents")
-            tags.append("เปิดรับอยู่" + (f" มีผู้พัก {cur}/{cap} คน" if cap and cur is not None else ""))
-        elif s.get("is_open") is False:
-            tags.append("ยังไม่เปิด")
-        ok = s.get("patients_ok", s.get("accepts_patients") or None)
-        if ok:
-            tags.append("รับผู้ป่วยติดเตียง")
-        elif need_patients:
-            tags.append("ไม่ได้ระบุว่ารับผู้ป่วยติดเตียง" if ok is None else "ไม่รับผู้ป่วยติดเตียง")
-        unit = "เขต" if s.get("province") == "กรุงเทพมหานคร" else "อ."
-        where = f" {unit}{s['district']}" if s.get("district") else ""
-        out.append(f"🏫 ศูนย์พักพิงที่แนะนำ: {s['name']}{where} ห่าง {s['distance_km']:.1f} กม."
-                   + (f" ({', '.join(tags)})" if tags else ""))
+        out.append("🏫 ศูนย์พักพิงที่แนะนำ: " + _shelter_desc(s, need_patients))
         if s.get("source") == "ddpm":
-            out.append("ข้อมูลศูนย์พักพิงจาก ปภ. สถานะเปลี่ยนได้ โทร 1784 สอบถามก่อนเดินทาง")
+            out.append(SHELTER_SOURCE_NOTE)
     return out
+
+
+def shelter_answer(place_label: str, approx: bool, shelters: list[dict], need_patients: bool) -> str:
+    """Answer to "where do I go": the best few shelters near a place, ranked by tools.find_shelters."""
+    if not shelters:
+        return (f"ยังไม่พบข้อมูลศูนย์พักพิงใกล้ {place_label} ค่ะ โทร 1784 (ปภ.) สอบถามศูนย์ที่เปิดอยู่ได้ตลอด 24 ชม.\n\n"
+                + FOOTER)
+    head = f"🏫 ศูนย์พักพิงใกล้ {place_label}" + (" (ตำแหน่งประมาณจากชื่อพื้นที่)" if approx else "")
+    if need_patients:
+        head += " เรียงให้ศูนย์ที่รับผู้ป่วยติดเตียงขึ้นก่อน"
+    lines = [head + ":"]
+    lines += [f"{i}. {_shelter_desc(s, need_patients)}" for i, s in enumerate(shelters, 1)]
+    lines.append("")
+    lines.append(SHELTER_SOURCE_NOTE if any(s.get("source") == "ddpm" for s in shelters)
+                 else "โทร 1784 สอบถามก่อนเดินทางว่าศูนย์ยังรับคนได้")
+    lines.append("ถ้ามีคำสั่งอพยพจากทางการ ให้ไปตามจุดที่ทางการกำหนด")
+    return "\n".join(lines) + "\n\n" + FOOTER
 
 
 def risk_answer(place_label: str, approx: bool, stations: list[dict], shelters: list[dict], memory: dict,

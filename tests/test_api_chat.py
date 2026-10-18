@@ -199,3 +199,32 @@ def test_rate_limit_is_20_per_minute_per_session(seeded):
     r = _chat(client, {"session_id": sid, "message": "สวัสดี"})
     assert r.status_code == 429 and r.json()["error"]["code"] == "rate_limited"
     assert _chat(client, {"session_id": str(uuid.uuid4()), "message": "สวัสดี"}).status_code == 200
+
+
+def test_shelter_question_lists_shelters_near_the_named_place(seeded):
+    client, _ = seeded
+    d = _chat(client, {"session_id": str(uuid.uuid4()), "message": "ศูนย์พักพิงแถวบางบาล อยุธยา มีที่ไหนบ้าง"}).json()["data"]
+    assert "ศูนย์ทดสอบ" in d["reply"] and "บางบาล" in d["reply"] and "1784" in d["reply"]
+    assert [s["type"] for s in d["sources"]] == ["shelter"] and d["sources"][0]["name"] == "ศูนย์ทดสอบ"
+    assert d["emergency"] is False and d["ticket_id"] is None
+
+
+def test_shelter_question_without_a_place_asks_for_one(seeded):
+    client, _ = seeded
+    d = _chat(client, {"session_id": str(uuid.uuid4()), "message": "หาศูนย์พักพิง"}).json()["data"]
+    assert d["sources"] == [] and "แชร์ตำแหน่ง" in d["reply"]
+    assert any(q["type"] == "location" for q in d["quick_replies"])
+
+
+def test_shelter_question_uses_the_saved_place(seeded):
+    client, _ = seeded
+    sid = str(uuid.uuid4())
+    _chat(client, {"session_id": sid, "message": "บ้านแม่อยู่บางบาล อยุธยา น้ำจะถึงไหม"})
+    d = _chat(client, {"session_id": sid, "message": "บ้านแม่ควรอพยพไปที่ไหน"}).json()["data"]
+    assert "บ้านแม่" in d["reply"] and d["sources"][0]["name"] == "ศูนย์ทดสอบ"
+
+
+def test_danger_beats_shelter(seeded):
+    client, _ = seeded
+    d = _chat(client, {"session_id": str(uuid.uuid4()), "message": "ติดอยู่ในบ้าน ไปศูนย์พักพิงไม่ได้ ช่วยด้วย"}).json()["data"]
+    assert d["emergency"] is True and d["ticket_id"] is not None

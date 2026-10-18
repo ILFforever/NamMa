@@ -141,6 +141,8 @@ Request: `{ session_id, message? | postback? | location?: { lat, lon } }`. Exact
   - Confirm before creating a ticket.
   - Ask for consent before saving vulnerable or health facts.
   - Say when a place is outside the demo basin instead of guessing.
+  - Shelter questions ("ศูนย์พักพิงแถวบางบาล", "บ้านแม่ควรอพยพไปที่ไหน") list up to 3 shelters near the named place,
+    else the saved place, with DDPM open/bedridden status, as `shelter` sources. No place known → ask for one.
 
 ## Profile
 
