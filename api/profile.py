@@ -18,19 +18,14 @@ FACT_KINDS = ("household", "needs", "house", "assets", "history")
 APPROX_PREFIX = "ประมาณจากชื่อพื้นที่:"
 
 
-def _who(user: dict | None, chat_session: str | None) -> str | None:
-    if user:
-        return user["line_user_id"]
-    if chat_session and 0 < len(chat_session) <= 128:
-        return f"web:{chat_session}"
-    return None
-
-
-def _user_id(conn: psycopg.Connection, external_id: str | None) -> int | None:
+def _user_id(conn: psycopg.Connection, user: dict | None, chat_session: str | None) -> int | None:
+    """The signed-in account, else the anonymous web chat's user (if that chat has said anything yet)."""
     conn.row_factory = tuple_row   # agent code reads rows by position (row[0])
-    if external_id is None:
+    if user:
+        return user["id"]
+    if not chat_session or len(chat_session) > 128:
         return None
-    row = conn.execute("SELECT id FROM users WHERE line_user_id = %s", (external_id,)).fetchone()
+    row = conn.execute("SELECT id FROM users WHERE line_user_id = %s", (f"web:{chat_session}",)).fetchone()
     return row[0] if row else None
 
 
@@ -82,19 +77,19 @@ def _profile(conn: psycopg.Connection, uid: int | None, line_linked: bool) -> di
 @router.get("/api/profile")
 def get_profile(user: dict | None = Depends(current_user), x_chat_session: str | None = Header(None),
                 conn: psycopg.Connection = Depends(get_db)):
-    uid = _user_id(conn, _who(user, x_chat_session))
-    return envelope(conn, _profile(conn, uid, line_linked=user is not None))
+    uid = _user_id(conn, user, x_chat_session)
+    return envelope(conn, _profile(conn, uid, line_linked=bool(user and tools.is_line_id(user["line_user_id"]))))
 
 
 @router.delete("/api/profile/places/{place_id}")
 def delete_place(place_id: int, user: dict | None = Depends(current_user), x_chat_session: str | None = Header(None),
                  conn: psycopg.Connection = Depends(get_db)):
-    uid = _user_id(conn, _who(user, x_chat_session))
+    uid = _user_id(conn, user, x_chat_session)
     if uid is None or not conn.execute("SELECT 1 FROM user_locations WHERE id = %s AND user_id = %s",
                                        (place_id, uid)).fetchone():
         raise ApiError(404, "not_found", f"place {place_id} not found")
     tools.forget(conn, uid, f"location:{place_id}")
-    return envelope(conn, _profile(conn, uid, line_linked=user is not None))
+    return envelope(conn, _profile(conn, uid, line_linked=bool(user and tools.is_line_id(user["line_user_id"]))))
 
 
 @router.delete("/api/profile/facts/{kind}")
@@ -103,7 +98,7 @@ def delete_facts(kind: str, user: dict | None = Depends(current_user), x_chat_se
     """kind: one of FACT_KINDS, or 'all' (every fact, place and fact waiting for consent)."""
     if kind not in (*FACT_KINDS, "all"):
         raise ApiError(400, "bad_request", f"unknown kind: {kind}")
-    uid = _user_id(conn, _who(user, x_chat_session))
+    uid = _user_id(conn, user, x_chat_session)
     if uid is not None:
         tools.forget(conn, uid, kind)
-    return envelope(conn, _profile(conn, uid, line_linked=user is not None))
+    return envelope(conn, _profile(conn, uid, line_linked=bool(user and tools.is_line_id(user["line_user_id"]))))

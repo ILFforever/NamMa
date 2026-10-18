@@ -84,8 +84,9 @@ def run(conn, now: datetime | None = None) -> list[dict]:
             shelters = tools.find_shelters(conn, loc["lat"], loc["lon"],
                                            {"patients": bool(hh.get("immobile")), "pets": bool(hh.get("pets"))})
             text = alert_text(loc["label"], st, mem, shelters)
-            uid_ext = loc["line_user_id"] or ""
-            if not uid_ext.startswith("web:") and line.configured():
+            uid_ext = loc["line_user_id"]
+            # Anonymous web chats and Google-only accounts have no LINE id: the alert waits in their messages.
+            if tools.is_line_id(uid_ext) and line.configured():
                 try:
                     line.push(uid_ext, [line.text_message(text)])
                 except Exception as e:

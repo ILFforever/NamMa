@@ -89,13 +89,15 @@ def chat_turn(body: ChatIn, user: dict | None = Depends(current_user), conn: psy
 
     _rate_limit(body.session_id)
     # Signed-in users share memory with their LINE account; anonymous web chat is keyed by session.
-    external_id = user["line_user_id"] if user else f"web:{body.session_id}"
+    # Signed-in users chat as their account (LINE or Google); anonymous web chat is keyed by session.
+    user_id = user["id"] if user else None
+    external_id = None if user else f"web:{body.session_id}"
     conn.row_factory = tuple_row   # agent code reads rows by position (row[0])
     try:
         if body.location is not None:
-            reply = chat.handle(conn, external_id, "web", location=(body.location.lat, body.location.lon))
+            reply = chat.handle(conn, external_id, "web", location=(body.location.lat, body.location.lon), user_id=user_id)
         else:
-            reply = chat.handle(conn, external_id, "web", text=text)
+            reply = chat.handle(conn, external_id, "web", text=text, user_id=user_id)
     except Exception as e:
         # Same promise as LINE: never leave someone who may be in danger with no answer.
         conn.rollback()
