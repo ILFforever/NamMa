@@ -12,6 +12,7 @@ import httpx
 
 BASE = "https://api-v3.thaiwater.net/api/v1/thaiwater30/public"
 BKK = ZoneInfo("Asia/Bangkok")
+FUTURE_TOLERANCE = timedelta(minutes=15)   # clock skew allowed before a reading counts as bogus
 MIN_INTERVAL_S = 1.0          # be polite: at most one request per second
 MAX_HISTORY_DAYS = 366        # longer ranges are silently truncated by the API
 
@@ -99,9 +100,14 @@ def signed_diff_wl_bank(value, text: str | None) -> float | None:
     return v
 
 
-def parse_waterlevel_load(payload: dict) -> tuple[list[dict], list[dict]]:
-    """Returns (stations, readings) from waterlevel_load."""
+def parse_waterlevel_load(payload: dict, now: datetime | None = None) -> tuple[list[dict], list[dict]]:
+    """Returns (stations, readings) from waterlevel_load.
+
+    A reading stamped later than now + FUTURE_TOLERANCE is dropped: a station with a bad clock
+    (X.5C reported 11 h ahead on 2026-10-18) would otherwise become the "latest" reading.
+    """
     stations, readings = [], []
+    latest_ok = (now or datetime.now(BKK)) + FUTURE_TOLERANCE
     for r in payload["waterlevel_data"]["data"]:
         s = r.get("station") or {}
         if not s.get("id"):
@@ -128,9 +134,12 @@ def parse_waterlevel_load(payload: dict) -> tuple[list[dict], list[dict]]:
             "is_key_station": bool(s.get("is_key_station")),
         })
         if r.get("waterlevel_datetime") and _num(r.get("waterlevel_msl")) is not None:
+            ts = _ts(r["waterlevel_datetime"])
+            if ts > latest_ok:
+                continue
             readings.append({
                 "station_id": s["id"],
-                "ts": _ts(r["waterlevel_datetime"]),
+                "ts": ts,
                 "level_msl": _num(r["waterlevel_msl"]),
                 "diff_wl_bank": signed_diff_wl_bank(r.get("diff_wl_bank"), r.get("diff_wl_bank_text")),
                 "situation_level": r.get("situation_level"),
