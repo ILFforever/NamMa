@@ -4,6 +4,8 @@
 # restarts and rolls back if the app does not come up. CI does the same after green tests on main (.github/workflows/deploy.yml).
 set -euo pipefail
 HOST="${1:?usage: push.sh deploy@host}"
+KEY="${NAMMA_SSH_KEY:-$HOME/.ssh/namma_deploy_ci}"   # the deploy user's key; falls back to your agent/default keys
+ssh() { if [ -f "$KEY" ]; then command ssh -i "$KEY" -o IdentitiesOnly=yes "$@"; else command ssh "$@"; fi; }
 cd "$(dirname "$0")/../.."
 # Web app: the built namma-web repo (npm run build there first). Skipped when there is no build.
 WEB_BUILD="${WEB_BUILD:-../namma-web/dist}"
