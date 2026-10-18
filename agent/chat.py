@@ -52,9 +52,16 @@ LOCATION_Q = QuickReply("แชร์ตำแหน่ง", kind="location")
 PROFILE_Q = _q("ข้อมูลที่จำไว้", "ข้อมูลอะไรที่จำเกี่ยวกับฉัน")
 
 
-def handle(conn, external_id: str, channel: str, text: str | None = None,
-           location: tuple[float, float] | None = None, display_name: str | None = None) -> Reply:
-    uid = tools.get_or_create_user(conn, external_id, display_name)
+def handle(conn, external_id: str | None, channel: str, text: str | None = None,
+           location: tuple[float, float] | None = None, display_name: str | None = None,
+           user_id: int | None = None) -> Reply:
+    """external_id: the LINE userId, or 'web:<session>' for anonymous web chat. A signed-in web user passes
+    user_id instead (their account may have no LINE id: Google sign-in)."""
+    if user_id is not None:
+        uid = user_id
+        conn.execute("INSERT INTO user_memory (user_id) VALUES (%s) ON CONFLICT DO NOTHING", (uid,))
+    else:
+        uid = tools.get_or_create_user(conn, external_id, display_name)
     if text:
         tools.log_message(conn, uid, channel, "user", text)
     elif location:

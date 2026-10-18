@@ -145,6 +145,56 @@ def get_or_create_user(conn, external_id: str, display_name: str | None = None) 
     return row[0]
 
 
+MEMORY_FIELDS = ("household", "house", "assets", "needs", "history", "preferences")
+
+
+def merge_users(conn, from_id: int, into_id: int) -> bool:
+    """Fold one user into another, then delete the first: an anonymous web chat ('web:<session>') joining the
+    account that just signed in. Moves places (a label both have keeps the newer, anonymous coordinates),
+    memory (field by field, the anonymous chat's facts win), consents (history kept, so the latest decision
+    still wins), pending facts, messages, alerts and rescue tickets. Returns False when there is nothing to do."""
+    if from_id == into_id:
+        return False
+    # Works with any row factory (the API uses dict rows, the agent tuple rows): reads go through _rows.
+    for loc in _rows(conn, "SELECT id, label, lat, lon, notes FROM user_locations WHERE user_id = %s", (from_id,)):
+        same = _rows(conn, "SELECT id FROM user_locations WHERE user_id = %s AND label = %s", (into_id, loc["label"]))
+        if same:
+            conn.execute("UPDATE user_locations SET lat = %s, lon = %s, notes = %s WHERE id = %s",
+                         (loc["lat"], loc["lon"], loc["notes"], same[0]["id"]))
+            conn.execute("DELETE FROM user_locations WHERE id = %s", (loc["id"],))
+        else:
+            conn.execute("UPDATE user_locations SET user_id = %s WHERE id = %s", (into_id, loc["id"]))
+    conn.execute("INSERT INTO user_memory (user_id) VALUES (%s) ON CONFLICT DO NOTHING", (into_id,))
+    sets = ", ".join(f"{f} = m.{f} || a.{f}" for f in MEMORY_FIELDS)
+    conn.execute(f"UPDATE user_memory m SET {sets}, updated_at = now() FROM user_memory a "
+                 "WHERE m.user_id = %s AND a.user_id = %s", (into_id, from_id))
+    conn.execute("INSERT INTO pending_facts (user_id, facts) SELECT %s, facts FROM pending_facts WHERE user_id = %s "
+                 "ON CONFLICT (user_id) DO UPDATE SET facts = pending_facts.facts || EXCLUDED.facts, ts = now()",
+                 (into_id, from_id))
+    for table in ("consents", "messages", "alerts_sent", "rescue_tickets"):
+        conn.execute(f"UPDATE {table} SET user_id = %s WHERE user_id = %s", (into_id, from_id))
+    # Sign-in identities follow the person, unless the account already has one of that provider.
+    conn.execute("UPDATE user_identities SET user_id = %s WHERE user_id = %s AND provider NOT IN "
+                 "(SELECT provider FROM user_identities WHERE user_id = %s)", (into_id, from_id, into_id))
+    line_from = _rows(conn, "SELECT line_user_id FROM users WHERE id = %s", (from_id,))[0]["line_user_id"]
+    conn.execute("DELETE FROM users WHERE id = %s", (from_id,))   # cascades what is left (memory row, summary)
+    if is_line_id(line_from):
+        conn.execute("UPDATE users SET line_user_id = %s WHERE id = %s AND (line_user_id IS NULL "
+                     "OR line_user_id LIKE 'web:%%')", (line_from, into_id))
+    return True
+
+
+def is_line_id(external_id: str | None) -> bool:
+    """A real LINE userId (or a demo stand-in), not an anonymous web chat key."""
+    return bool(external_id) and not external_id.startswith("web:")
+
+
+def delete_user(conn, user_id: int) -> None:
+    """PDPA erasure: the account and everything kept about the person. Rescue tickets stay for the responders'
+    record but lose the link to the person (ON DELETE SET NULL)."""
+    conn.execute("DELETE FROM users WHERE id = %s", (user_id,))
+
+
 def has_consent(conn, user_id: int, kind: str = "sensitive_memory") -> bool:
     row = conn.execute("SELECT granted FROM consents WHERE user_id = %s AND kind = %s ORDER BY ts DESC LIMIT 1",
                        (user_id, kind)).fetchone()
@@ -167,7 +217,7 @@ def get_user_profile(conn, user_id: int) -> dict:
 def merge_memory(conn, user_id: int, facts: dict) -> None:
     """facts: {field: {key: value}} for the user_memory JSONB columns. Shallow merge per field."""
     for field, vals in facts.items():
-        if field not in ("household", "house", "assets", "needs", "history", "preferences") or not vals:
+        if field not in MEMORY_FIELDS or not vals:
             continue
         conn.execute(f"UPDATE user_memory SET {field} = {field} || %s::jsonb, updated_at = now() WHERE user_id = %s",
                      (json.dumps(vals, ensure_ascii=False), user_id))

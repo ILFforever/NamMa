@@ -147,7 +147,7 @@ Request: `{ session_id, message? | postback? | location?: { lat, lon } }`. Exact
 ## Profile
 
 What NamMa remembers about the person chatting, for the web ProfilePanel (CLAUDE.md §7: view and delete).
-Who: the signed-in user, else the anonymous chat from the **`X-Chat-Session: <session_id>`** header (the same
+Who: the signed-in account (LINE or Google), else the anonymous chat from the **`X-Chat-Session: <session_id>`** header (the same
 `session_id` as `POST /api/chat`). An unknown session gets the empty profile; nothing is created.
 
 ### `GET /api/profile` → `Profile`
@@ -161,7 +161,7 @@ Who: the signed-in user, else the anonymous chat from the **`X-Chat-Session: <se
              { "kind": "house", "text": "บ้าน 2 ชั้น", "sensitive": false } ],
   "consent": { "granted": true, "ts": "…" },   // latest sensitive_memory decision; ts null = never asked
   "pending_consent": false,                     // a sensitive fact waits for consent (not shown, not saved)
-  "line_linked": false                          // signed in with LINE
+  "line_linked": false                          // the account has a LINE id (gets LINE alerts)
 }
 ```
 - `approx`: the place was geocoded from its name, not a GPS share. `nearest` is null when no fresh station is within 60 km.
@@ -175,14 +175,37 @@ Who: the signed-in user, else the anonymous chat from the **`X-Chat-Session: <se
 
 ## Auth
 
-### `POST /api/auth/line` → `{ session_token, user: { display_name, role, picture_url } }`
-Body: `{ id_token }`.
-- **Real mode:** verify a LIFF ID token with `POST https://api.line.me/oauth2/v2.1/verify` (`id_token`, `client_id` = LINE Login channel id). Use `sub` as the LINE userId.
-- **Mock mode:** accepts `demo:user` / `demo:responder`.
-- `role` is `user | responder`. Responders come from an allowlist or a `users.role` column.
+One account per person. It signs in with **LINE**, with **Google**, or with both linked, and keeps its saved places,
+memory, consents and history across devices. LINE OA chatters already have an account (keyed by their LINE userId):
+signing in on the web with LINE opens that same account.
+
+`SessionUser = { display_name, role, picture_url, identities: { line: boolean, google: string | null } }`
+(`google` is the linked Google account's email, shown on the account page only, never used to match accounts).
+
+### `POST /api/auth/line` → `{ session_token, user: SessionUser, merged_chat: boolean }`
+### `POST /api/auth/google` → same
+Body: `{ id_token, chat_session? }`.
+- **LINE:** a LIFF ID token, verified with `POST https://api.line.me/oauth2/v2.1/verify` (`client_id` = `LINE_LOGIN_CHANNEL_ID`). `sub` is the LINE userId.
+- **Google:** a Google Sign-In ID token, verified with `https://oauth2.googleapis.com/tokeninfo`; `aud` must be `GOOGLE_CLIENT_ID` and the email verified. `sub` is the Google id.
+- The first sign-in creates the account. A Google-created account has no LINE id until LINE is linked, so it gets no LINE pushes (alerts wait in its messages).
+- **`chat_session`** is the anonymous web chat's `session_id`. Its places, memory, consents, pending facts, messages and tickets join the account and the anonymous chat is deleted (`merged_chat: true`). A place label both have keeps the anonymous chat's (newer) coordinates.
+- **Demo (`DEMO_MODE=1`):** `demo:user`, `demo:responder`, `demo:user:<name>` (LINE, one account per name) and `demo:google:<name>` (Google). `<name>` is `[a-z0-9_-]{1,40}`.
+- `role` is `user | responder`. Responders come from `RESPONDER_LINE_IDS` (or demo).
+
+### `POST /api/auth/link/{line|google}` → `SessionUser` (signed in)
+Body: `{ id_token }`. Adds a second way to sign in. If that LINE or Google account already has its own NamMa account (a LINE OA chatter, say), it is the same person: that account's places, memory and history join this one and it is deleted. **409 `conflict`** if this account already has a different one of that provider, or merging would give it two. 404 for another provider.
+
+### `DELETE /api/auth/link/{line|google}` → `SessionUser`
+Removes one way to sign in. **409** if it is the only one (delete the account instead).
+
+### `POST /api/auth/logout` → `{ signed_out: true }`
+Ends this session token.
 
 ### `GET /api/me` → `SessionUser`
 Returns 401 without a session.
+
+### `DELETE /api/me` → `{ deleted: true }`
+PDPA erasure: the account, its sign-ins, sessions, places, memory, consents and messages. Rescue tickets stay for the responders' record, unlinked from the person. Signing in again starts an empty account.
 
 ## Schema gaps for the backend owner
 
