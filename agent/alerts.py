@@ -51,7 +51,7 @@ def alert_text(label: str, station: dict, mem: dict, shelters: list[dict]) -> st
     lines.append("⚠️ ค่าที่สถานีริมแม่น้ำ ไม่ใช่ระดับน้ำที่บ้านโดยตรง")
     lines.append("\n✅ สิ่งที่ควรทำตอนนี้")
     lines += [f"• {a}" for a in answer.rule_advice(tier, mem)]
-    sh = answer.shelter_line(shelters)
+    sh = answer.shelter_line(shelters, need_patients=bool((mem.get("household") or {}).get("immobile")))
     if sh:
         lines += [""] + sh
     return "\n".join(lines) + "\n\n" + answer.FOOTER

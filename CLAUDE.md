@@ -100,9 +100,12 @@ History: `GET .../public/rain_24h_graph?station_type=rainfall_24h&station_id={ra
 Response shapes are not yet inspected. Log one real response and write the parser against it.
 
 ### 4.5 No API (handle manually)
-- **Shelters:** hand-curate a CSV for the demo basin (name, lat, lon, capacity, accepts patients/pets, phone) → `shelters` table.
+- ~~Shelters: hand-curate a CSV~~ → now from DDPM, see §4.7.
 - **DDPM alerts/bulletins:** no API. Don't scrape Facebook. Link to official channels instead.
 - **BMA road sensors / Traffy Fondue:** stretch goals only, unverified.
+
+### 4.7 DDPM shelters (verified 2026-10-18)
+`GET https://shelter.disaster.go.th/api/v1/arcgis/shelter-layer/FeatureServer/0/query` (ArcGIS, public map layer of DDPM's shelter system, no key). ~20,000 shelters, ~12,000 public, all 77 provinces incl. Bangkok, live `is_active` (open now), `current_residents`, `capacity`, `qualification_accept_bedridden/elderly/disabled/...` (1 / 0 / **null on most rows** = not stated). No pets field. Max 2,000 rows per request (`resultOffset`). No licence stated: fetch once a day, credit ปภ. Coordinator names/emails/phones are personal data: never fetch. Client + import: `ingest/shelters.py` (daily, in the scheduler). The open CSV on catalog.disaster.go.th (`dpm-gd002`, 2024) has no Bangkok, Bang Ban, open status or bedridden field: not used.
 
 ### 4.6 Demo corridor stations (from live data, 2026-10-14)
 Main stem, upstream → downstream. Ids are ThaiWater `station.id`.

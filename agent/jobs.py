@@ -13,6 +13,7 @@ from agent import alerts, risk
 from common.config import RAW_DIR
 from common.db import connect
 from ingest import run as ingest
+from ingest import shelters
 
 RAW_KEEP_DAYS = int(os.environ.get("RAW_KEEP_DAYS", "7"))   # ~0.5 MB per run, ~75 MB/day; OBS keeps the long-term copy
 KEEP_MESSAGES = 200                                          # per user; the agent only reads the last 10
@@ -30,6 +31,12 @@ def cleanup(conn) -> None:
 def run_once() -> None:
     ingest.run_once()
     with connect() as conn:
+        try:
+            if shelters.due(conn):                 # once a day: DDPM shelter status
+                print(f"shelters imported: {shelters.run_once(conn)}", flush=True)
+        except Exception as e:                     # keep yesterday's list; water data matters more
+            conn.rollback()
+            print(f"shelter import skipped: {e!r}", flush=True)
         results = risk.compute_all(conn)
         try:
             from model import forecast    # optional: needs lightgbm + model/artifacts

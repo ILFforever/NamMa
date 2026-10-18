@@ -1,4 +1,4 @@
-"""Load curated CSVs (station_edges, shelters) into the DB. Idempotent.
+"""Load curated CSVs (station_edges) into the DB. Idempotent. Shelters come from DDPM: python -m ingest.shelters.
 
     python -m common.seed
 
@@ -43,17 +43,8 @@ def main() -> None:
                 "INSERT INTO station_edges (upstream_id, downstream_id, approx_travel_hours) VALUES (%s, %s, %s) "
                 "ON CONFLICT (upstream_id, downstream_id) DO UPDATE SET approx_travel_hours = EXCLUDED.approx_travel_hours",
                 (int(e["upstream_id"]), int(e["downstream_id"]), _num(e["approx_travel_hours"])))
-        shelters = _rows("shelters.csv")
-        for s in shelters:
-            conn.execute(
-                "INSERT INTO shelters (name, lat, lon, capacity, accepts_patients, accepts_pets, phone, notes) "
-                "VALUES (%s, %s, %s, %s, %s, %s, %s, %s) ON CONFLICT (name) DO UPDATE SET lat = EXCLUDED.lat, "
-                "lon = EXCLUDED.lon, capacity = EXCLUDED.capacity, accepts_patients = EXCLUDED.accepts_patients, "
-                "accepts_pets = EXCLUDED.accepts_pets, phone = EXCLUDED.phone, notes = EXCLUDED.notes",
-                (s["name"], float(s["lat"]), float(s["lon"]), int(s["capacity"] or 0) or None,
-                 s["accepts_patients"] == "true", s["accepts_pets"] == "true", s["phone"] or None, s["notes"] or None))
         print(f"seeded corridor {corridor_matched}/{corridor_listed} stations, "
-              f"{len(edges)} station_edges, {len(shelters)} shelters")
+              f"{len(edges)} station_edges")
 
 
 if __name__ == "__main__":

@@ -100,12 +100,28 @@ def advice_lines(tier: str, memory: dict, facts_text: str) -> list[str]:
     return rules
 
 
-def shelter_line(shelters: list[dict]) -> list[str]:
+def shelter_line(shelters: list[dict], need_patients: bool = False) -> list[str]:
+    """The top shelter from tools.find_shelters (best match, not always the nearest) with its DDPM status.
+    Unknown is said as unknown: most DDPM shelters don't say whether they take bedridden patients."""
     out = []
     for s in shelters[:1]:
-        tags = [t for t, ok in (("รับผู้ป่วย", s["accepts_patients"]), ("รับสัตว์เลี้ยง", s["accepts_pets"])) if ok]
-        out.append(f"🏫 ศูนย์พักพิงใกล้สุด (ข้อมูลตัวอย่าง): {s['name']} ห่าง {s['distance_km']:.1f} กม."
+        tags = []
+        if s.get("is_open") is True:
+            cap, cur = s.get("capacity"), s.get("current_residents")
+            tags.append("เปิดรับอยู่" + (f" มีผู้พัก {cur}/{cap} คน" if cap and cur is not None else ""))
+        elif s.get("is_open") is False:
+            tags.append("ยังไม่เปิด")
+        ok = s.get("patients_ok", s.get("accepts_patients") or None)
+        if ok:
+            tags.append("รับผู้ป่วยติดเตียง")
+        elif need_patients:
+            tags.append("ไม่ได้ระบุว่ารับผู้ป่วยติดเตียง" if ok is None else "ไม่รับผู้ป่วยติดเตียง")
+        unit = "เขต" if s.get("province") == "กรุงเทพมหานคร" else "อ."
+        where = f" {unit}{s['district']}" if s.get("district") else ""
+        out.append(f"🏫 ศูนย์พักพิงที่แนะนำ: {s['name']}{where} ห่าง {s['distance_km']:.1f} กม."
                    + (f" ({', '.join(tags)})" if tags else ""))
+        if s.get("source") == "ddpm":
+            out.append("ข้อมูลศูนย์พักพิงจาก ปภ. สถานะเปลี่ยนได้ โทร 1784 สอบถามก่อนเดินทาง")
     return out
 
 
@@ -132,7 +148,7 @@ def risk_answer(place_label: str, approx: bool, stations: list[dict], shelters: 
     tier = worst["risk_tier"]
     adv = advice_lines(tier, memory, facts)
     body = facts + "\n\n✅ สิ่งที่ควรทำตอนนี้\n" + "\n".join(f"• {a}" for a in adv)
-    sh = shelter_line(shelters)
+    sh = shelter_line(shelters, need_patients=bool((memory.get("household") or {}).get("immobile")))
     if sh:
         body += "\n\n" + "\n".join(sh)
     return body + tail + "\n\n" + FOOTER
