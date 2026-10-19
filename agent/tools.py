@@ -223,9 +223,18 @@ def merge_memory(conn, user_id: int, facts: dict) -> None:
 
 
 def set_pending(conn, user_id: int, facts: dict) -> None:
+    """Add facts waiting for consent, merged field by field so a second fact ("ใช้ออกซิเจน") keeps the first
+    ("กินยาประจำ"). An empty dict clears them."""
+    if not facts:
+        conn.execute("DELETE FROM pending_facts WHERE user_id = %s", (user_id,))
+        return
+    row = conn.execute("SELECT facts FROM pending_facts WHERE user_id = %s", (user_id,)).fetchone()
+    merged = dict(row[0]) if row else {}
+    for k, v in facts.items():
+        merged[k] = {**(merged.get(k) or {}), **v} if isinstance(v, dict) else v
     conn.execute("INSERT INTO pending_facts (user_id, facts) VALUES (%s, %s) ON CONFLICT (user_id) "
-                 "DO UPDATE SET facts = pending_facts.facts || EXCLUDED.facts, ts = now()",
-                 (user_id, json.dumps(facts, ensure_ascii=False)))
+                 "DO UPDATE SET facts = EXCLUDED.facts, ts = now()",
+                 (user_id, json.dumps(merged, ensure_ascii=False)))
 
 
 def pop_pending(conn, user_id: int) -> dict:

@@ -210,3 +210,32 @@ def test_rescue_words_are_not_taken_as_a_place_name(conn):
     assert r.emergency and r.text.startswith(chat.RESCUE_HOTLINE)
     chat.handle(conn, "U-safe", "line", location=(14.41, 100.46))
     assert "ช่วยด้วย" not in _locs(conn, tools.get_or_create_user(conn, "U-safe", None))
+
+
+def test_unplaced_risk_question_asks_which_place_never_greets(conn):
+    risk.compute_all(conn, NOW)
+    r = chat.handle(conn, "U-doi", "web", text="บ้านอยู่ตีนดอยสุเทพ จะเป็นอะไรไหมอะ")
+    assert not r.text.startswith("สวัสดี") and "ต.สุเทพ อ.เมืองเชียงใหม่ จ.เชียงใหม่" in r.text
+    assert "น้ำป่า" in r.text and "1784" in r.text                 # hillside: say what stations cannot see
+    pick = r.quick[0].text
+    assert pick == "บ้านอยู่ ต.สุเทพ อ.เมืองเชียงใหม่ จ.เชียงใหม่ น้ำจะถึงไหม"
+    a = chat.handle(conn, "U-doi", "web", text=pick)              # the quick reply places it and saves the home
+    assert a.text.startswith("บ้าน ต.สุเทพ") and "ไม่พบสถานีวัดน้ำ" in a.text   # test stations are all in Ayutthaya
+    assert "บ้าน" in _locs(conn, tools.get_or_create_user(conn, "U-doi", None))
+
+
+def test_unplaced_place_is_not_answered_with_another_saved_place(conn):
+    risk.compute_all(conn, NOW)
+    chat.handle(conn, "U-two", "line", text="บ้านอยู่บางบาล อยุธยา น้ำจะถึงไหม")
+    r = chat.handle(conn, "U-two", "line", text="บ้านแม่อยู่ตีนดอยสุเทพ จะเป็นอะไรไหม")
+    assert not r.sources and "ต.สุเทพ" in r.text
+    # A concern question with no flood word still checks the saved home
+    r = chat.handle(conn, "U-two", "line", text="บ้านจะเป็นอะไรไหม")
+    assert r.sources and r.sources[0]["code"] == "T.1"
+
+
+def test_only_a_greeting_gets_the_greeting(conn):
+    assert chat.handle(conn, "U-g", "line", text="สวัสดีครับ").text.startswith("สวัสดีค่ะ")
+    other = chat.handle(conn, "U-g", "line", text="กินข้าวยัง")
+    assert other.text.startswith("น้ำมายังไม่เข้าใจ") and "1784" in other.text
+    assert "ยังหาตำแหน่งนี้ไม่เจอ" in chat.handle(conn, "U-g", "line", text="ปลอดภัยไหม").text
