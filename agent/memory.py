@@ -37,6 +37,10 @@ _NOT_OURS = re.compile(r"(ไม่มี|(?<!เดิน)(?<!ขยับ)(?<!
                        r"\S{0,8}?" + _TERMS + r"|" + _TERMS + r"\S{0,12}?(หายแล้ว|หายดีแล้ว|ตอนนี้หาย)")
 _NEGATED = re.compile(r"(ไม่มี|(?<!เดิน)(?<!ขยับ)(?<!ตัว)ไม่ได้|ไม่ใช่|เลิก|พิมพ์ผิด)\S{0,8}?" + _TERMS)
 _HYPOTHETICAL = re.compile(r"ถ้า|หาก|สมมติ")
+# Taken back in the same message: "…ใช้เครื่องช่วยหายใจ อ้อ จริงๆ ไม่ใช่นะ ไม่มีใครใช้".
+_RETRACTED = re.compile(r"ไม่ใช่นะ|ไม่ใช่ค่ะ|ไม่ใช่ครับ|พิมพ์ผิด|ลืมไป|ไม่มีใคร|ขอแก้|ยกเลิกที่พูด|ไม่จริง")
+# "ขอแก้ไข จริงๆ เป็นพี่สาวไม่ใช่แม่": a correction of what was saved.
+CORRECTION = re.compile(r"ขอแก้|แก้ไข|พิมพ์ผิด|จำผิด|ไม่ใช่" + WHO)
 
 
 def extract_rules(text: str) -> dict:
@@ -68,13 +72,14 @@ def extract_rules(text: str) -> dict:
         needs["power_dependent"] = True
     if re.search(r"ยาประจำ|ยาโรค|อินซูลิน|ยาความดัน|ยาเบาหวาน|กินยา(ประจำ|ทุกวัน|ตลอด|โรค)", t):
         needs["medication"] = True
-    if re.search(r"บ้านชั้นเดียว|บ้าน1ชั้น", t):
+    if re.search(r"บ้านชั้นเดียว|บ้าน1ชั้น|ชั้นหนึ่ง|ชั้นเดียว", t):
         house["stories"] = 1
     elif re.search(r"บ้านสองชั้น|บ้าน2ชั้น", t):
         house["stories"] = 2
     if re.search(r"ใต้ถุนสูง|ยกพื้น|ยกสูง", t):
         house["raised"] = True
-    if re.search(r"ติดคลอง|ริมคลอง|ใกล้คลอง|ริมแม่น้ำ|ติดแม่น้ำ|ใกล้แม่น้ำ|ริมน้ำ", t):
+    near = re.search(r"ติดคลอง|ริมคลอง|ใกล้คลอง|ริมแม่น้ำ|ติดแม่น้ำ|ใกล้แม่น้ำ|ริมน้ำ", t)
+    if near and not re.search(r"(ร้าน|โรงเรียน|ที่ทำงาน|ตลาด|วัด|โรงงาน|ออฟฟิศ)\S{0,10}$", t[:near.start()]):
         house["near_water"] = True
     if re.search(r"(?<!ไม่)มีรถ(ยนต์|เก๋ง|กระบะ|(?!มอ|เข็น))", t):
         assets["car"] = True
@@ -94,7 +99,7 @@ def negates_sensitive(text: str) -> bool:
 
 def _drop_hypothetical(text: str, facts: dict) -> dict:
     """"ถ้าน้ำท่วม แม่จะติดเตียง" states nothing about the household: keep no sensitive fact from an if-sentence."""
-    if _HYPOTHETICAL.search(text):
+    if _HYPOTHETICAL.search(text) or _RETRACTED.search(text.replace(" ", "")):
         return {k: v for k, v in facts.items() if k not in SENSITIVE}
     return facts
 
@@ -121,13 +126,15 @@ def merged_view(memory: dict, pending: dict) -> dict:
 
 
 def location_label(text: str) -> str | None:
-    """'บ้านแม่อยู่บางระกำ' → 'บ้านแม่'. First-person homes collapse to 'บ้าน'."""
+    """'บ้านแม่อยู่บางระกำ' → 'บ้านแม่'. First-person homes collapse to 'บ้าน'. Labels other than บ้าน need
+    "อยู่"/"แถว" ("ร้านน้ำแข็งที่หัวหิน" is not a saved place); "ชาวบ้าน", "หมู่บ้าน" are not homes."""
     t = text.replace(" ", "")
-    m = re.search(r"((?:บ้าน|ร้าน|โรงเรียน|คอนโด|หอพัก|ที่ทำงาน|ออฟฟิศ|โรงงาน|สวน|ไร่)\S{0,12}?)(?:อยู่|ที่|แถว)", t)
+    m = (re.search(r"(?<!ชาว)(?<!หมู่)(?<!เพื่อน)(?<!ข้าง)(บ้าน\S{0,12}?)(?:อยู่|ที่|แถว)", t)
+         or re.search(r"((?:ร้าน|โรงเรียน|คอนโด|หอพัก|ที่ทำงาน|ออฟฟิศ|โรงงาน|สวน|ไร่)\S{0,12}?)(?:อยู่|แถว)", t))
     if not m:
         return None
-    label = m.group(1)
-    if re.fullmatch(r"บ้าน(ผม|ฉัน|หนู|เรา|ดิฉัน|กู|เค้า|ตัวเอง|ข้า|เอง)?", label):
+    label = re.sub(r"(ไว้|ให้|ด้วย|ได้ไหม|ได้มั้ย|หน่อย|นะ|ที|จ้า|ค่ะ|ครับ)+$", "", m.group(1))
+    if re.fullmatch(r"บ้าน(ผม|ฉัน|หนู|เรา|ดิฉัน|กู|เค้า|ตัวเอง|ข้า|เอง)?", label) or re.match(r"บ้าน(ผม|ฉัน|หนู|เรา)", label):
         return "บ้าน"
     return label
 

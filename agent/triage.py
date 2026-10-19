@@ -18,7 +18,8 @@ DANGER = ["น้ำเข้าบ้าน", "ติดอยู่", "ช่�
           "หายไปในน้ำ", "หายในน้ำ", "เด็กหาย", "คนหาย", "ลูกหาย", "แม่หาย", "พ่อหาย", "เพื่อนหาย", "ยายหาย", "ตาหาย",
           "หาไม่เจอ", "บนหลังคา", "ขึ้นหลังคา", "ยืนอยู่ในน้ำ", "ติดในรถ", "ติดอยู่ในรถ", "บนต้นไม้", "วิ่งหนี",
           "บ่ไหว", "ติดในบ้าน", "ติดอยู่ใน", "รถดับกลางน้ำ", "ช่วยส่งอาหาร", "น้ำเข้าแล้ว", "น้ำเข้ามาแล้ว",
-          "รถพยาบาล",
+          "รถพยาบาล", "พลัดหลง", "น้ำล้อม", "ถูกน้ำล้อม", "จมหมด", "ชั้นล่างจม", "คนเจ็บ", "ไม่ไหวแล้ว",
+          "submerged", "cantgetout", "can'tgetout", "keepsrising", "waterisin", "waterisinthe", "secondfloor",
           # medical
           "เลือดออก", "เลือดไหล", "งูกัด", "งูเห่า", "โดนงู", "หายใจไม่ออก", "หายใจลำบาก", "หายใจไม่ได้", "แก๊สรั่ว",
           "หมดสติ", "ไม่หายใจ", "ชักเกร็ง", "ท้องแตก", "น้ำเดิน", "จะคลอด", "กำลังคลอด", "เป็นลม", "จะล้ม", "จะตาย",
@@ -54,10 +55,11 @@ NOT_NOW = re.compile(r"ถ้า|หาก|สมมติ|เมื่อปี
                      r"จะ\S{0,12}?(ไหม|มั้ย|มั๊ย|หรือเปล่า|รึเปล่า|เมื่อไหร่|วันไหน)|น้ำจะ|"
                      r"(ไหม|มั้ย|มั๊ย|หรือเปล่า|รึเปล่า|ป่าว)(คะ|ครับ|ค่ะ|จ๊ะ|นะ)?\??$")
 # Stories, statistics, drills, volunteering, sayings: never an emergency unless they also say it is happening now.
-NOT_REAL = re.compile(r"นิยาย|ในหนัง|ละคร|เรื่องเล่า|เรื่องสั้น|เขียนเรื่อง|รายงาน|วิจัย|การบ้าน|สถิติ|ซ้อม|drill|"
+NOT_REAL = re.compile(r"ท่อตัน|ท่อแตก|ห้องน้ำ|ค่าน้ำ|inwork|lol|ในงาน|งานท่วม|(ปวดหัว|ปวดท้อง)\S{0,4}?จะตาย(อยู่)?(แล้ว)?|นิยาย|ในหนัง|ละคร|เรื่องเล่า|เรื่องสั้น|เขียนเรื่อง|รายงาน|วิจัย|การบ้าน|สถิติ|ซ้อม|drill|"
                       r"อาสา|สมัคร|ข่าว|whatif|"
                       r"(หิว|เหนื่อย|ร้อน|ขำ|ง่วง|เบื่อ|เครียด)\S{0,4}?จะตาย(อยู่)?(แล้ว)?|เกิดจาก|ป้องกัน|คืออะไร|เคย|"
                       r"ปีที่แล้ว|เมื่อปี|เกือบ")
+POWER_NEED = re.compile(r"เครื่องช่วยหายใจ|ออกซิเจน|ซีแพพ|cpap|ฟอกไต")
 ACTIVITY = re.compile(r"กำลัง(ทำ|เขียน|อ่าน|หา|เรียน|ดู)")
 STRONG = ("h3lp", "ช่วยด้วย", "ช่วยที", "ช่วยแหน่", "sos", "helpme", "trapped", "drowning")
 THAI_NUM = {"หนึ่ง": 1, "สอง": 2, "สาม": 3, "สี่": 4, "ห้า": 5, "หก": 6, "เจ็ด": 7, "แปด": 8, "เก้า": 9, "สิบ": 10}
@@ -68,9 +70,15 @@ def is_danger(text: str) -> bool:
     inside the house or up to the body, stranded without food or medicine. "ถ้าน้ำเข้าบ้านต้องทำยังไง" (if…),
     "เมื่อปี 54 น้ำเข้าบ้าน" (then), "น้ำจะเข้าบ้านไหม" (will it), stories and drills are not, unless they also say
     it is happening now ("แล้ว", "กำลัง", "ตอนนี้"). A plain call for help always is."""
-    t = clean(text).replace(" ", "").lower()
-    if t in ("ช่วย", "ช่วยหน่อย", "help", "ฉุกเฉิน", "sos"):
+    words = clean(text).lower().split()
+    t = "".join(words)
+    letters = re.sub(r"[^\w\u0e00-\u0e7f]", "", t)          # "S.O.S.", "s-o-s"
+    if t in ("ช่วย", "ช่วยหน่อย", "help", "ฉุกเฉิน", "sos") or letters in ("sos", "help", "helpme"):
         return True
+    if words.count("ช่วย") >= 2 or (words and words[0] == "ช่วย" and len(words) <= 3):
+        return True                                       # "ช่วย ช่วย ช่วย", "ช่วย ก"
+    if POWER_NEED.search(t) and re.search(r"ไฟดับ|ไฟตก|ไม่มีไฟ", t):
+        return True                                       # a breathing machine and no power: plan now, not later
     if ALERT.search(t) or (OVER.search(t) and not any(k in t for k in STRONG)):
         return False
     now = bool(NOW.search(NOT_REAL.sub("", ACTIVITY.sub("", t))))   # "ปีที่แล้ว", "กำลังทำรายงาน" are not now

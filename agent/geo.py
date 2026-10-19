@@ -21,7 +21,7 @@ PROVINCE_ALIASES = {
 # ("แม่อาย|ุ 85"), not after a leading vowel ("เ|ลี้ยง"), not after "ชื่อ" ("ผมชื่อบางปะอิน").
 _BAD_NEXT = re.compile("[\u0e30-\u0e3a\u0e45\u0e47-\u0e4e]")
 _LEAD_VOWELS = "\u0e40\u0e41\u0e42\u0e43\u0e44"
-_NOT_AFTER = ("ชื่อ", "ชื่อว่า", "นามสกุล", "เขื่อน", "อุทยาน", "อ่างเก็บน้ำ", "อินท")
+_NOT_AFTER = ("ชื่อ", "ชื่อว่า", "นามสกุล", "คุณ", "นาย", "นาง", "น้อง", "พี่", "เขื่อน", "อุทยาน", "อ่างเก็บน้ำ", "อินท")
 # Names that are also ordinary words ("แถวเลย", "ท่าเรือ" = a pier, "นนท์" in "อินทนนท์"): only after อ./ต./จ.,
 # อำเภอ/ตำบล/จังหวัด, or as the first word of the message.
 AMBIGUOUS = {"เลย", "ตาก", "แพร่", "สอง", "ลอง", "ลี้", "พาน", "ธาตุ", "ท่าเรือ", "แม่น้ำ"}
@@ -80,12 +80,13 @@ def _norm(text: str) -> tuple[str, str]:
     spaced = " ".join(text.lower().split())
     for en, th in ROMAN.items():                       # "bang ban" and "bangban" alike
         spaced = spaced.replace(en[:4] + " " + en[4:], th).replace(en, th)
+    joined = spaced.replace(" ", "")
     for typo, th in TYPOS.items():
-        spaced = spaced.replace(typo, th)
-    return spaced.replace(" ", ""), spaced
+        spaced, joined = spaced.replace(typo, th), joined.replace(typo, th)
+    return joined, spaced
 
 
-def _names(name: str, text: str, spaced: str, need_cue: bool = False) -> bool:
+def _names(name: str, text: str, spaced: str, need_cue: bool = False, own_province: bool = False) -> bool:
     """Is `name` named in the text as a word of its own? Short names (or any name when need_cue) also need a
     place word before them, or to open the message as a word of their own ("น่าน น้ำจะท่วมไหม")."""
     for m in re.finditer(re.escape(name), text):
@@ -98,8 +99,8 @@ def _names(name: str, text: str, spaced: str, need_cue: bool = False) -> bool:
         if before.endswith(_NOT_AFTER):
             continue
         opens = i == 0 and (spaced == name or spaced.startswith(name + " "))
-        if name in AMBIGUOUS:
-            if opens or before.endswith(ADMIN_CUES):
+        if name in AMBIGUOUS or name in COMMON_WORDS:
+            if opens or before.endswith(ADMIN_CUES) or (own_province and before.endswith(CUES)):
                 return True
             continue
         if before.endswith(CUES) or opens:
@@ -126,19 +127,19 @@ def find_place(text: str) -> Place | None:
     places = _gazetteer()
     provinces |= {p.province for p in places if not p.amphoe and _names(p.province, text, spaced)}
 
-    def hit(name: str) -> bool:
-        return len(name) >= 3 and _names(name, text, spaced)
+    def hit(name: str, province: str = "") -> bool:
+        return len(name) >= 3 and _names(name, text, spaced, own_province=province in provinces)
 
     best, best_score = None, 0
     for p in places:
         score = 0
         if p.tambon:
             # A bare tambon name is often shared across provinces; trust it only with context.
-            if not hit(p.tambon) or not (hit(p.amphoe) or p.province in provinces):
+            if not hit(p.tambon, p.province) or not (hit(p.amphoe, p.province) or p.province in provinces):
                 continue
-            score = 3 + (1 if hit(p.amphoe) else 0)
+            score = 3 + (1 if hit(p.amphoe, p.province) else 0)
         elif p.amphoe:
-            if not hit(p.amphoe):
+            if not hit(p.amphoe, p.province):
                 continue
             score = 2
         else:
