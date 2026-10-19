@@ -207,4 +207,6 @@ def test_empty_profile_offers_to_add_and_bare_home_starts_saving(conn):
 def test_rescue_words_are_not_taken_as_a_place_name(conn):
     chat.handle(conn, "U-safe", "line", text=chat.ADD_PLACE)
     r = chat.handle(conn, "U-safe", "line", text="ช่วยด้วย")
-    assert r.emergency and r.ticket_id
+    assert r.emergency and r.text.startswith(chat.RESCUE_HOTLINE)
+    chat.handle(conn, "U-safe", "line", location=(14.41, 100.46))
+    assert "ช่วยด้วย" not in _locs(conn, tools.get_or_create_user(conn, "U-safe", None))

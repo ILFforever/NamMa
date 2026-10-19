@@ -40,7 +40,6 @@ class Reply:
     quick: list[QuickReply] = field(default_factory=list)
     sources: list[dict] = field(default_factory=list)   # docs/api.md Source objects (used by the web API)
     emergency: bool = False                             # danger signalled: the web shows the 1784 card first
-    emergency: bool = False                             # danger signalled, or a ticket was created/confirmed
     place: dict | None = None                           # {label, lat, lon, approx, saved_label}: lets LINE show a map pin + card
     extra: list[str] = field(default_factory=list)      # notes already inside text that the LINE card does not repeat
 
@@ -262,9 +261,7 @@ def _shelters(conn, uid: int, t: str) -> Reply:
 
 def _on_location(conn, uid: int, location) -> Reply:
     lat, lon = location
-    prof = tools.get_user_profile(conn, uid)
-    label = "บ้าน" if not prof["locations"] else "ตำแหน่งที่แชร์"
-    tools.save_location(conn, uid, label, lat, lon)
+    label = _save_shared(conn, uid, lat, lon)
     text, sources = _assess(conn, uid, lat, lon, label, approx=False,
                             extra=[f"📌 บันทึกตำแหน่งนี้เป็น \"{label}\" แล้ว จะแจ้งเตือนเมื่อน้ำสูงขึ้น"])
     return Reply(text, [PROFILE_Q], sources=sources,
