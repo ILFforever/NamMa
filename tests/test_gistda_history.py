@@ -92,6 +92,11 @@ def test_build_merges_shapes_into_cells_and_subdistricts():
     assert gh.years_of(t["years"]) == [2011, 2012, 2017, 2024] and t["freq"] == 4 and t["shapes"] == 3
     assert t["pv_code"] == "14" and set(t["rai_by_year"]) == {"2011", "2012", "2017", "2024"}
     assert t["rai_by_year"]["2011"] > t["rai_by_year"]["2017"] > 0                # the second shape is smaller
+    small = [_shape([2011, 2017], half=0.0002), _shape([2011], half=0.0002, at=(14.4105, 100.4605))]
+    for f, rai in zip(small, (4.0, 2.5)):
+        f["properties"]["area_rai"] = rai                     # as GISTDA sends it: far below a cell's ~62 rai
+    [t] = gh.build([{"features": small}], "14")[1]
+    assert t["rai_by_year"] == {"2011": 6.5, "2017": 4.0}
     by_h3 = {c["h3"]: c for c in cells}
     centre = by_h3[h3.latlng_to_cell(*BANG_BAN, 9)]
     assert gh.years_of(centre["years"]) == [2011, 2012, 2017, 2024] and centre["freq"] == 4
