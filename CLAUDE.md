@@ -182,6 +182,14 @@ Tools (each is a plain Python function with typed input and output; unit-test th
 - `find_shelters(lat, lon, needs)` → filter by accepts_patients / accepts_pets
 - `get_user_profile(user_id)` / `save_location(...)`
 
+**Understanding (2026-10-19): LLM first, rules as guide and fallback.** Each typed message (not buttons or "ลบ …")
+goes whole to one LLM call (`agent/understand.py`) with recent turns, saved places and the rules' guess as a hint. It
+returns intent, place names (Thai) and stated household facts; that call replaces the memory-extraction call. Code
+then resolves the names in the gazetteer (`geo.resolve`, never LLM coordinates) and runs the tools. The rules still
+raise danger on their own (the LLM can add danger, never remove it), keep deletes on explicit commands, and decide
+everything when the LLM is off or its output is not the JSON asked for. An `other` answer from the LLM is shown only
+if it has no numbers but hotlines and never says "safe".
+
 **Prompt assembly per turn:** system prompt (rules from §2 + tone: calm, direct, Thai) → user memory block (only consented fields) → conversation summary + last ~10 messages → tool results → user message.
 
 **Danger:** if the user signals danger ("น้ำเข้าบ้านแล้ว", "ติดอยู่", "ช่วยด้วย"), the reply leads with the DDPM 1784 contact, says NamMa does not send for help on their behalf, lists what to tell 1784 (the place in words or GPS coordinates, who needs help, how many people, from the message and memory) and what to do while waiting. No ticket, no confirm step (`agent/triage.py`).

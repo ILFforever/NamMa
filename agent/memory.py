@@ -106,11 +106,16 @@ def _drop_hypothetical(text: str, facts: dict) -> dict:
     return facts
 
 
+def clean(text: str, out: dict) -> dict:
+    """LLM output → the known fields only, nothing sensitive from an if-sentence."""
+    return _drop_hypothetical(text, {k: v for k, v in out.items() if k in FIELDS and isinstance(v, dict) and v})
+
+
 def extract(text: str) -> dict:
     if llm.available():
         out = llm.chat_json(SYSTEM, text)
         if isinstance(out, dict):
-            return _drop_hypothetical(text, {k: v for k, v in out.items() if k in FIELDS and isinstance(v, dict) and v})
+            return clean(text, out)
     return extract_rules(text)
 
 
