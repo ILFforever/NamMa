@@ -61,6 +61,36 @@ Both come from `station_edges` and are empty for stations without edges (all HII
 ### `GET /api/stations/{id}/readings?hours=72` → `{ station_id, readings: Reading[] }`
 `Reading = { ts, level_msl, diff_wl_bank, discharge }`, oldest first, `hours` from 1 to 168. Hourly is enough for the chart. Gaps are fine: the client breaks the line where readings are missing.
 
+## Rivers
+
+Every ThaiWater station with a river name, position and bank, grouped and ordered by `ingest.rivers` after each ingest
+(design and evidence: `docs/rivers-api.md`, fixes: `data/river_overrides.csv`). For the home page's river charts.
+A river lists each place once: where two stations gauge one place (< 3 km apart) the RID one (or the fresh one) stands
+for it. Only rivers with ≥ 2 such stations.
+
+### `GET /api/rivers?lat=&lon=&q=&limit=6` → `River[]`
+- With `q`: rivers whose name contains `q`, most stations first. `reason: "match"`.
+- Otherwise: rivers with a station at watch or worse, worst tier first, then highest against its bank (≤ `limit`,
+  `reason: "at_risk"`); then, given `lat`/`lon`, the river with the station nearest that point if not already listed
+  (`"near_you"`). If that is nothing: the three best-gauged rivers (`"largest"`).
+- 400 if only one of `lat`/`lon` is given.
+
+```jsonc
+{
+  "key": "แม่น้ำเจ้าพระยา",          // stable; a second river of the same name is "<name>@<lowest station id>"
+  "name_th": "แม่น้ำเจ้าพระยา",
+  "basins": ["ลุ่มน้ำเจ้าพระยา"],
+  "provinces": ["นครสวรรค์", "ชัยนาท", "…"],   // upstream first; tells same-named rivers apart
+  "worst_tier": "danger",           // normal | watch | warning | danger | null (no station has a risk row)
+  "reason": "at_risk",              // at_risk | near_you | largest | match
+  "distance_km": 1.5,               // to its nearest station, when lat/lon given; else null
+  "stations": [ /* StationSummary, upstream first */ ]
+}
+```
+
+### `GET /api/rivers/{key}` → `River`
+One river, all its stations (`reason: "match"`, `distance_km: null`). 404 if unknown or under 2 stations.
+
 ## Shelters
 
 ### `GET /api/shelters?lat=&lon=&patients=true&pets=true&limit=50` → `Shelter[]`

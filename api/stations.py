@@ -17,7 +17,7 @@ SUMMARY_KEYS = ("id", "oldcode", "name_th", "name_en", "lat", "lon", "river", "p
 # One row per station: newest reading (LATERAL, not N+1) and its risk row. Bank levels are for detail only.
 _STATION_SQL = """
 SELECT s.id, s.oldcode, s.name_th, s.name_en, s.lat, s.lon, s.river, s.province, s.amphoe, s.agency,
-       s.is_key_station, s.stem_order, s.role,
+       s.is_key_station, s.stem_order, s.role, s.basin, s.river_key, s.river_order,
        s.left_bank, s.right_bank, s.min_bank, s.ground_level, s.critical_level_msl,
        l.ts AS latest_ts, l.level_msl AS latest_level_msl, l.diff_wl_bank AS latest_diff_wl_bank,
        l.situation_level AS latest_situation_level, l.discharge AS latest_discharge,

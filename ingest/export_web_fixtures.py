@@ -3,7 +3,8 @@
     python -m ingest.export_web_fixtures            # live waterlevel_load + 7 days of history
     python -m ingest.export_web_fixtures --days 3
 
-Writes stations.json and readings.json for the stations in data/corridor_stations.csv into the namma-web
+Writes stations.json and readings.json for the stations in data/corridor_stations.csv, and rivers.json (the
+corridor's rivers plus the best-gauged others, grouped by ingest.rivers), into the namma-web
 repo's src/api/mock/fixtures (default: the checkout next to this one, ../namma-web; or --out DIR). ~25 requests at the client's 1 req/s limit.
 
 Risk here is PROVISIONAL: a simplified version of the CLAUDE.md §8 rules so the mock map
@@ -15,13 +16,16 @@ import json
 from datetime import date, datetime, timedelta
 from pathlib import Path
 
-from ingest import thaiwater
+from ingest import rivers, thaiwater
 
 ROOT = Path(__file__).resolve().parent.parent
 OUT = ROOT.parent / "namma-web" / "src" / "api" / "mock" / "fixtures"   # namma-web checkout next to this repo; --out overrides
 RISING_CM_PER_HR = 0.5
 WATCH_GAP_M = 0.5
 WARNING_HOURS = 6.0
+EXTRA_RIVERS = 4      # rivers.json: besides the corridor's, this many of the best-gauged others
+SUMMARY_KEYS = ("id", "oldcode", "name_th", "name_en", "lat", "lon", "river", "province", "amphoe", "agency",
+                "is_key_station", "stem_order", "role", "latest", "risk")
 
 
 def provisional_risk(diff_wl_bank: float | None, trend_cm_per_hr: float | None,
@@ -80,6 +84,53 @@ def load_edges() -> list[dict]:
                 for r in csv.DictReader(f)]
 
 
+def _latest(lr: dict | None) -> dict | None:
+    return None if lr is None else {
+        "ts": lr["ts"].isoformat(),
+        "level_msl": lr["level_msl"],
+        "diff_wl_bank": _r(lr["diff_wl_bank"]),
+        "situation_level": int(lr["situation_level"]) if lr["situation_level"] is not None else None,
+        "discharge": lr["discharge"],
+    }
+
+
+def river_fixtures(all_stations: list[dict], all_latest: dict[int, dict], corridor_summaries: dict[int, dict],
+                   now: datetime) -> list[dict]:
+    """Rivers as GET /api/rivers/{key} returns them, minus what depends on the request (reason, distance_km,
+    worst_tier: the mock works those out). Corridor stations reuse their stations.json summary; the others get
+    the provisional tier from the bank gap alone (no history fetched for them, so no trend)."""
+    placed = rivers.group([rivers.Station(s["id"], s["river"], s["lat"], s["lon"], s["min_bank"], s["agency"],
+                                          all_latest[s["id"]]["ts"] if s["id"] in all_latest else None)
+                           for s in all_stations], rivers.load_overrides(), now)
+    by_key: dict[str, list[tuple[int, int]]] = {}
+    for sid, p in placed.items():
+        if p.river_order is not None:
+            by_key.setdefault(p.river_key, []).append((p.river_order, sid))
+    by_key = {k: [sid for _, sid in sorted(v)] for k, v in by_key.items() if len(v) >= 2}
+    corridor_keys = sorted({placed[sid].river_key for sid in corridor_summaries if sid in placed} & set(by_key))
+    others = sorted((k for k in by_key if k not in corridor_keys), key=lambda k: (-len(by_key[k]), k))
+    info = {s["id"]: s for s in all_stations}
+
+    def summary(sid: int) -> dict:
+        if sid in corridor_summaries:
+            return {k: corridor_summaries[sid][k] for k in SUMMARY_KEYS}
+        s, lr = info[sid], all_latest.get(sid)
+        risk = provisional_risk(lr["diff_wl_bank"] if lr else None, None, False)
+        return {**{k: s[k] for k in SUMMARY_KEYS[:11]}, "stem_order": None, "role": None, "latest": _latest(lr),
+                "risk": None if risk is None or lr is None else {
+                    "tier": risk[0], "trend_cm_per_hr": None, "hours_to_bank": None,
+                    "computed_at": lr["ts"].isoformat()}}
+
+    out = []
+    for key in corridor_keys + others[:EXTRA_RIVERS]:
+        ids = by_key[key]
+        basins = list(dict.fromkeys(info[i]["basin"] for i in ids if info[i]["basin"]))
+        provinces = list(dict.fromkeys(info[i]["province"] for i in ids if info[i]["province"]))
+        out.append({"key": key, "name_th": key.split("@")[0], "basins": basins, "provinces": provinces,
+                    "stations": [summary(i) for i in ids]})
+    return out
+
+
 def main() -> None:
     p = argparse.ArgumentParser()
     p.add_argument("--days", type=int, default=7)
@@ -90,8 +141,12 @@ def main() -> None:
     corridor = load_corridor()
     edges = load_edges()
 
-    stations, latest = thaiwater.parse_waterlevel_load(thaiwater.fetch_waterlevel_load())
-    stations = {s["id"]: s for s in stations if s["id"] in corridor}
+    all_stations, latest = thaiwater.parse_waterlevel_load(thaiwater.fetch_waterlevel_load())
+    all_latest: dict[int, dict] = {}
+    for r in latest:
+        if r["station_id"] not in all_latest or r["ts"] > all_latest[r["station_id"]]["ts"]:
+            all_latest[r["station_id"]] = r
+    stations = {s["id"]: s for s in all_stations if s["id"] in corridor}
     latest = {r["station_id"]: r for r in latest if r["station_id"] in corridor}
     missing = sorted(set(corridor) - set(stations))
     if missing:
@@ -124,13 +179,7 @@ def main() -> None:
                                  "ground_level", "critical_level_msl")},
             "stem_order": int(row["stem_order"]) if row["stem_order"] else None,
             "role": row["role"] or None,
-            "latest": None if lr is None else {
-                "ts": lr["ts"].isoformat(),
-                "level_msl": lr["level_msl"],
-                "diff_wl_bank": _r(lr["diff_wl_bank"]),
-                "situation_level": int(lr["situation_level"]) if lr["situation_level"] is not None else None,
-                "discharge": lr["discharge"],
-            },
+            "latest": _latest(lr),
             "risk": None if risk is None or lr is None else {
                 "tier": risk[0],
                 "trend_cm_per_hr": trends[sid],
@@ -157,6 +206,11 @@ def main() -> None:
         json.dumps({"meta": meta, "columns": ["ts", "level_msl", "diff_wl_bank", "discharge"],
                     "readings": readings}, ensure_ascii=False, separators=(",", ":")),
         encoding="utf-8")
+    river_list = river_fixtures(all_stations, all_latest, {s["id"]: s for s in out_stations},
+                                datetime.now(thaiwater.BKK))
+    (out / "rivers.json").write_text(
+        json.dumps({"meta": meta, "rivers": river_list}, ensure_ascii=False, indent=1), encoding="utf-8")
+    print(f"wrote {len(river_list)} rivers: " + ", ".join(f"{r['key']} ({len(r['stations'])})" for r in river_list))
     tiers = {}
     for s in out_stations:
         t = s["risk"]["tier"] if s["risk"] else "unknown"
