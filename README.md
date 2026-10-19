@@ -34,6 +34,7 @@ SCHEDULER=1 .venv/bin/uvicorn api.main:app --port 8000  # API + LINE webhook + 1
 - Web app (built `../namma-web/dist`, or set `WEB_DIST`): http://localhost:8000/#/chat · `#/map` · `#/flood`
 - Demo step 3 (tier jump → alert): `POST /api/demo/simulate {"station_id": 2609, "tier": "danger"}`, undo with `POST /api/demo/refresh`. Both need `DEMO_MODE=1` and a session: `TOKEN=$(curl -s localhost:8000/api/auth/line -H 'content-type: application/json' -d '{"id_token":"demo:user"}' | jq -r .data.session_token)`, then `-H "Authorization: Bearer $TOKEN"`.
 - GISTDA flood layers: `python -m ingest.gistda_flood` (once; the scheduler runs it every 3 h when `GISTDA_API_KEY` is set).
+- GISTDA flood history 2011–2024, one province: `python -m ingest.gistda_history --province 14 --show บางบาล` (run by hand, off-hours; resumes from the pages in `var/raw/gistda/flood-freq`).
 - Without MaaS / GISTDA / LINE keys everything still works: rule-based Thai, no satellite lines or flood map data, web chat instead of LINE.
 
 ## Model and backtest
