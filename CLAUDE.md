@@ -119,6 +119,12 @@ response are archived (key removed) under `var/raw/gistda`. Check them once a ke
 ### 4.7 DDPM shelters (verified 2026-10-18)
 `GET https://shelter.disaster.go.th/api/v1/arcgis/shelter-layer/FeatureServer/0/query` (ArcGIS, public map layer of DDPM's shelter system, no key). ~20,000 shelters, ~12,000 public, all 77 provinces incl. Bangkok, live `is_active` (open now), `current_residents`, `capacity`, `qualification_accept_bedridden/elderly/disabled/...` (1 / 0 / **null on most rows** = not stated). No pets field. Max 2,000 rows per request (`resultOffset`). No licence stated: fetch once a day, credit ปภ. Coordinator names/emails/phones are personal data: never fetch. Client + import: `ingest/shelters.py` (daily, in the scheduler). The open CSV on catalog.disaster.go.th (`dpm-gd002`, 2024) has no Bangkok, Bang Ban, open status or bedridden field: not used.
 
+### 4.8 Place names → coordinates (`data/gazetteer.csv`)
+Every province, district and subdistrict (77 / 928 / 7,425) with official Thai names and polygon centroids, from the
+Royal Thai Survey Department's admin boundaries on HDX (`cod-ab-tha`, v01 2022-01-22, **CC BY-IGO: credit RTSD / OCHA**),
+plus the few names ThaiWater station geocodes spell differently. Rebuild: `python -m ingest.gazetteer`. Centroids are
+area centres, not addresses: answers say "ตำแหน่งโดยประมาณจากชื่อพื้นที่".
+
 ### 4.6 Demo corridor stations (from live data, 2026-10-14)
 Main stem, upstream → downstream. Ids are ThaiWater `station.id`.
 
