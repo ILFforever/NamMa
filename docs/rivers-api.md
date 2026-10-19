@@ -1,6 +1,8 @@
 # `/api/rivers`: every river, upstream first (design draft)
 
-Status: proposal, 2026-10-19. Not built. Replaces the corridor-only `GET /api/stations` as the source for the
+Status: backend built 2026-10-20 (`ingest/rivers.py`, `api/rivers.py`, migration 009; contract in `docs/api.md` →
+Rivers). Changes from the draft: clusters use 150 km, not 80 (the Ping has a 113 km gap across Bhumibol, the Nan 94 km
+across Sirikit), and overrides give a `sort_bank` instead of an order number. Replaces the corridor-only `GET /api/stations` as the source for the
 home page's river charts (staff gauges, river line, cross-sections). The map, chat, forecast and upstream links
 are unchanged.
 
@@ -42,7 +44,7 @@ is still right, but a 10 cm survey error would flip it.
 ## Pipeline (in ingest, after each `waterlevel_load`)
 
 1. **Group.** Key by `river` name, then split each name into clusters: stations stay together if each is
-   within ~80 km of another in the cluster. This separates generic names that are different streams
+   within 150 km of another in the cluster. This separates generic names that are different streams
    (`คลองใหญ่` appears in 3 basins, `ห้วยยาง` in 2). It also keeps a real river together across a basin
    boundary (the Tha Chin and Pa Sak are each tagged with two basins). Stations with no `river` name stay
    off the river charts. They are still on the map and in nearest-station answers.
@@ -52,15 +54,16 @@ is still right, but a 10 cm survey error would flip it.
    show them. (On the Chao Phraya the closest *distinct* places are 8 km apart, so 3 km is safe there. Check
    it on 2–3 more rivers.)
 3. **Order.** Sort by `min_bank` descending, after dropping `min_bank <= 0`.
-4. **Override.** `data/river_overrides.csv` (`station_id, river_key, order, exclude`) beats steps 1–3. The
-   corridor CSV becomes the first override file, after the C.35/CPY011 fix. Use it for tidal reaches,
-   branches (Noi, Bang Ban) and anything a person checked by hand.
+4. **Override.** `data/river_overrides.csv` (`station_id, river_key, sort_bank, exclude`) beats steps 1–3. Use it
+   for tidal reaches, branches (Noi, Bang Ban) and anything a person checked by hand. It starts empty: on the live
+   data the automatic order already matches the corridor's hand-made order on the Chao Phraya.
 5. **Optional, later:** where an override isn't enough, project stations onto the river's line from
    HydroRIVERS or OSM and sort by distance along it. Only do this if the bank sort keeps getting a river
    wrong.
 
-Store the result on `stations`: `river_key TEXT`, `river_order INT`, `same_place_as INT NULL`. It's
-recomputed cheaply each ingest, and the API stays a plain SELECT.
+Stored on `stations`: `river_key TEXT`, `river_order INT`, `same_place_as INT NULL`. Recomputed each ingest
+(`agent.jobs`, in a savepoint) and by `common.seed`. On the 2026-10-19 data: 716 stations on rivers, 92 stand-ins,
+93 rivers with ≥ 2 stations; `/api/rivers` answers in ~30 ms (31 KB).
 
 ## API
 
@@ -78,11 +81,11 @@ Returns rivers with ≥ 2 stations after removing duplicates. They are ordered a
 {
   "data": [
     {
-      "key": "chao-phraya",                 // stable slug, used by /api/rivers/{key}
+      "key": "แม่น้ำเจ้าพระยา",              // river name; a second same-named river is "<name>@<lowest station id>"
       "name_th": "แม่น้ำเจ้าพระยา",
       "basins": ["ลุ่มน้ำเจ้าพระยา"],
       "worst_tier": "danger",
-      "reason": "at_risk",                  // at_risk | near_you
+      "reason": "at_risk",                  // at_risk | near_you | largest | match
       "stations": [ /* StationSummary, upstream first, duplicates removed */ ]
     }
   ],

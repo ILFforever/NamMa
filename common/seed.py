@@ -43,8 +43,10 @@ def main() -> None:
                 "INSERT INTO station_edges (upstream_id, downstream_id, approx_travel_hours) VALUES (%s, %s, %s) "
                 "ON CONFLICT (upstream_id, downstream_id) DO UPDATE SET approx_travel_hours = EXCLUDED.approx_travel_hours",
                 (int(e["upstream_id"]), int(e["downstream_id"]), _num(e["approx_travel_hours"])))
+        from ingest import rivers
+        on_rivers = rivers.run_once(conn)
         print(f"seeded corridor {corridor_matched}/{corridor_listed} stations, "
-              f"{len(edges)} station_edges")
+              f"{len(edges)} station_edges, {on_rivers} stations on rivers")
 
 
 if __name__ == "__main__":

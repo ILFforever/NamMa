@@ -1,0 +1,5 @@
+# Per-station fixes for ingest.rivers, applied on top of the automatic grouping (docs/rivers-api.md).
+# river_key: put the station on this river instead of its ThaiWater river name's.
+# sort_bank: sort it as if its bank were this high (m MSL), to fix an upstream/downstream swap.
+# exclude: 1 to keep the station off the river charts (it stays on the map).
+station_id,river_key,sort_bank,exclude,note

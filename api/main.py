@@ -19,7 +19,7 @@ from common.config import ROOT
 from common.db import connect
 from ingest import gistda_flood
 from line.webhook import router as line_router
-from api import auth, chat_web, flood, profile, stations
+from api import auth, chat_web, flood, profile, rivers, stations
 from api.common import install_error_handlers
 
 DEMO = os.environ.get("DEMO_MODE", "1") == "1"
@@ -40,7 +40,7 @@ app = FastAPI(title="NamMa", lifespan=lifespan)
 install_error_handlers(app)
 app.include_router(line_router)
 # Web API contract: docs/api.md (+ src/api/types.ts in namma-web).
-for module in (auth, stations, flood, chat_web, profile):
+for module in (auth, stations, rivers, flood, chat_web, profile):
     app.include_router(module.router)
 
 
