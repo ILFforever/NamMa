@@ -33,6 +33,17 @@ def test_parse_waterlevel_load():
     assert r[39]["ts"] == datetime(2026, 10, 14, 15, 30, tzinfo=tw.BKK)
 
 
+def test_parse_waterlevel_load_zero_banks_mean_unknown():
+    # BLGTU06 on 2026-10-19: every bank field 0, so ThaiWater's "gap" was the level itself (331.81 "above bank").
+    r = load("waterlevel_load.json")["waterlevel_data"]["data"][1]
+    r["station"].update(left_bank="0", right_bank="0", min_bank="0", ground_level="0", critical_level_msl="0")
+    r.update(waterlevel_msl="331.81", diff_wl_bank="331.81", diff_wl_bank_text="ล้นตลิ่ง (ม.)")
+    stations, readings = tw.parse_waterlevel_load({"waterlevel_data": {"data": [r]}})
+    assert stations[0]["min_bank"] is None and stations[0]["critical_level_msl"] is None
+    assert readings[0]["level_msl"] == 331.81
+    assert readings[0]["diff_wl_bank"] is None
+
+
 def test_parse_waterlevel_graph_drops_nulls_and_derives_bank_gap():
     rows = tw.parse_waterlevel_graph(39, load("waterlevel_graph_39.json"))
     assert rows and all(r["level_msl"] is not None for r in rows)

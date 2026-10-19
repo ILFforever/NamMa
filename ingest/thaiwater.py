@@ -78,6 +78,12 @@ def _num(v) -> float | None:
         return None
 
 
+def _bank(v) -> float | None:
+    """A bank height in m MSL. ThaiWater sends 0 when it has none (BLGTU06: every bank field 0)."""
+    n = _num(v)
+    return None if n == 0 else n
+
+
 def _ts(s: str) -> datetime:
     return datetime.strptime(s[:16], "%Y-%m-%d %H:%M").replace(tzinfo=BKK)
 
@@ -113,6 +119,7 @@ def parse_waterlevel_load(payload: dict, now: datetime | None = None) -> tuple[l
         if not s.get("id"):
             continue
         g = r.get("geocode") or {}
+        banks = {k: _bank(s.get(k)) for k in ("left_bank", "right_bank", "min_bank")}
         stations.append({
             "id": s["id"],
             "oldcode": s.get("tele_station_oldcode"),
@@ -125,11 +132,9 @@ def parse_waterlevel_load(payload: dict, now: datetime | None = None) -> tuple[l
             "province": _th(g, "province_name"),
             "amphoe": _th(g, "amphoe_name"),
             "tambon": _th(g, "tumbon_name"),
-            "left_bank": _num(s.get("left_bank")),
-            "right_bank": _num(s.get("right_bank")),
-            "min_bank": _num(s.get("min_bank")),
-            "ground_level": _num(s.get("ground_level")),
-            "critical_level_msl": _num(s.get("critical_level_msl")),
+            **banks,
+            "ground_level": _bank(s.get("ground_level")),
+            "critical_level_msl": _bank(s.get("critical_level_msl")),
             "agency": _th(r.get("agency"), "agency_shortname", "en"),
             "is_key_station": bool(s.get("is_key_station")),
         })
@@ -141,7 +146,9 @@ def parse_waterlevel_load(payload: dict, now: datetime | None = None) -> tuple[l
                 "station_id": s["id"],
                 "ts": ts,
                 "level_msl": _num(r["waterlevel_msl"]),
-                "diff_wl_bank": signed_diff_wl_bank(r.get("diff_wl_bank"), r.get("diff_wl_bank_text")),
+                # With no bank ThaiWater's gap is measured from 0 (= the level itself), which read as danger.
+                "diff_wl_bank": (signed_diff_wl_bank(r.get("diff_wl_bank"), r.get("diff_wl_bank_text"))
+                                 if any(v is not None for v in banks.values()) else None),
                 "situation_level": r.get("situation_level"),
                 "discharge": _num(r.get("discharge")),
             })
@@ -151,7 +158,7 @@ def parse_waterlevel_load(payload: dict, now: datetime | None = None) -> tuple[l
 def parse_waterlevel_graph(station_id: int, payload: dict) -> list[dict]:
     """History readings; nulls dropped. diff_wl_bank is derived from min_bank when known."""
     data = payload["data"]
-    min_bank = _num(data.get("min_bank"))
+    min_bank = _bank(data.get("min_bank"))
     out = []
     for p in data["graph_data"]:
         level = _num(p.get("value"))
