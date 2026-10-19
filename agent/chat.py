@@ -167,6 +167,14 @@ EXAMPLE_Q = _q("ตัวอย่าง: บางบาล", "บ้านอ�
 SET_HOME = "ตั้งตำแหน่งบ้าน"            # profile quick replies: edit the home, add another place, add household facts
 ADD_PLACE = "เพิ่มสถานที่"
 ADD_FACTS = "เพิ่มข้อมูลครอบครัว"
+# Typed versions of the two buttons ("เพิ่มบ้าน", "ช่วยบันทึกบ้านหน่อย"): the whole message, nothing else in it,
+# so "บันทึกบ้านแม่อยู่บางบาล" still saves the place it names.
+_EDIT_POLITE = r"(?:ช่วย|ขอ|อยาก|รบกวน)?\s*(?:{})\s*(?:ให้)?\s*(?:หน่อย|ด้วย|ได้ไหม|ได้มั้ย)?\s*(?:ค่ะ|คะ|ครับ|นะ|จ้า)?"
+SET_HOME_RE = re.compile(_EDIT_POLITE.format(r"(?:เพิ่ม|บันทึก|ตั้ง(?:ค่า)?|เปลี่ยน|แก้(?:ไข)?|เซ็ต|เซฟ|ปักหมุด)\s*"
+                                             r"(?:ตำแหน่ง|ที่อยู่|พิกัด)?\s*บ้าน(?:ฉัน|ของฉัน|เรา)?"))
+ADD_PLACE_RE = re.compile(_EDIT_POLITE.format(r"(?:เพิ่ม|บันทึก|เซฟ|ปักหมุด)\s*(?:สถานที่|ที่|ตำแหน่ง)(?:ใหม่|อื่น)?"))
+# "เพิ่มบ้านแม่", "บันทึกร้าน": add the place under that name (checked after SET_HOME_RE, so "เพิ่มบ้าน" is the home).
+ADD_NAMED_RE = re.compile(r"(?:ช่วย|ขอ)?\s*(?:เพิ่ม|บันทึก)\s*((?:บ้าน|ร้าน|ที่ทำงาน|ออฟฟิศ|โรงเรียน|คอนโด|หอพัก|หอ)\S{0,10})")
 AWAIT_TTL = 15 * 60                      # a half-finished "add a place" is forgotten after 15 minutes
 HOME = "บ้าน"
 
@@ -237,6 +245,12 @@ def _route(conn, uid: int, text: str, location) -> Reply:
             text, sources = _assess(conn, uid, lat, lon, label, False)
             return Reply(em.text + "\n\n" + text, sources=sources, emergency=True)
         return _on_location(conn, uid, location)
+    if SET_HOME_RE.fullmatch(t):
+        t = SET_HOME
+    elif ADD_PLACE_RE.fullmatch(t):
+        t = ADD_PLACE
+    elif (m := ADD_NAMED_RE.fullmatch(t)) and _place_name_ok(m.group(1)):
+        return _got_place_name(conn, uid, m.group(1))
     if t in (SET_HOME, ADD_PLACE, ADD_FACTS):
         return _start_edit(conn, uid, t)
     if step := _awaiting(conn, uid):
