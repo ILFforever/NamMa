@@ -1,37 +1,26 @@
-"""GISTDA for the chat: satellite flood extent near a point, and flood recurrence 2011–2023.
+"""GISTDA for the chat: satellite flood extent near a point, and flood recurrence.
 
 - Extent comes from the 3-day and 7-day layers ingest/gistda_flood.py stores (the old flood-extent-1day point query
   is dead), so a chat reply makes no GISTDA call for it.
-- Recurrence is a live point query (needs GISTDA_API_KEY in the API-Key header). Its response shape is from another
-  project's recorded responses (Oct 2026), not yet one of ours, so every raw response is archived under
-  var/raw/gistda to check the parser against.
+- Recurrence is off until we hold our own copy of GISTDA's flood history. The old point query
+  (gi-service/v1.0/disasters/flood-recurrence) is dead (404, checked from the VM 2026-10-19), and its replacement,
+  features/flood-freq, takes 20 s to over 60 s for a map-box query, too slow for a chat reply. The copy plan
+  (docs: "GISTDA flood history: own copy plan") fills flood_history_cells / flood_history_tambon; then
+  get_flood_recurrence reads from those.
 
-Both return None when there is nothing to say (no layer stored yet, no key, any error): GISTDA is extra context,
+Both return None when there is nothing to say (no layer stored yet, no copy yet): GISTDA is extra context,
 never a blocker for an answer.
 """
-import json
 import math
-import os
-import time
-from datetime import datetime
 
 import h3
-import httpx
 from psycopg.rows import dict_row
 
 from agent.geo import haversine_km
-from common.config import RAW_DIR
 from ingest.thaiwater import BKK
 
 NEAR_KM = 5.0
 DAYS = {"3days": 3, "7days": 7}
-
-RECURRENCE_URL = "https://api-gateway.gistda.or.th/api/2.0/resources/gi-service/v1.0/disasters/flood-recurrence"
-TIMEOUT_S = 4          # this runs inside a chat reply
-CACHE_S = 3600
-BACKOFF_S = 600        # after a failure, skip calls for 10 min: a dead endpoint costs one timeout, not one per chat
-_cache: dict[tuple, tuple[float, dict | None]] = {}
-_failed_at = 0.0
 
 
 def check_flood_extent(conn, lat: float, lon: float) -> dict | None:
@@ -67,47 +56,7 @@ def check_flood_extent(conn, lat: float, lon: float) -> dict | None:
             "source": "GISTDA"}
 
 
-def parse_recurrence(data) -> dict | None:
-    """[{subdistrict_name, district_name, province_name, total, detail: [{year, freq}]}] → {tambon, amphoe, province,
-    years}: the years with any flooding. None for {"result": "not found"} or anything else."""
-    rows = data.get("data") if isinstance(data, dict) else data
-    if not isinstance(rows, list) or not rows or not isinstance(rows[0], dict):
-        return None
-    r = rows[0]
-    years = set()
-    for d in r.get("detail") or []:
-        try:
-            if float(d.get("freq") or 0) > 0:
-                years.add(int(d["year"]))
-        except (TypeError, ValueError, KeyError, AttributeError):
-            continue
-    if not years:
-        return None
-    return {"tambon": r.get("subdistrict_name"), "amphoe": r.get("district_name"),
-            "province": r.get("province_name"), "years": sorted(years), "source": "GISTDA (2011–2023)"}
-
-
 def get_flood_recurrence(lat: float, lon: float) -> dict | None:
-    global _failed_at
-    key = os.environ.get("GISTDA_API_KEY")
-    if not key or time.time() - _failed_at < BACKOFF_S:
-        return None
-    ck = (round(lat, 3), round(lon, 3))
-    hit = _cache.get(ck)
-    if hit and time.time() - hit[0] < CACHE_S:
-        return hit[1]
-    try:
-        r = httpx.get(RECURRENCE_URL, params={"lat": lat, "lon": lon}, timeout=TIMEOUT_S,
-                      headers={"API-Key": key, "User-Agent": "NamMa flood assistant (hackathon)"})
-        r.raise_for_status()
-        data = r.json()
-    except Exception as e:
-        _failed_at = time.time()
-        print(f"gistda recurrence failed: {e!r}".replace(key, "***"), flush=True)
-        return None
-    path = RAW_DIR / "gistda" / f"recurrence_{datetime.now():%Y%m%d_%H%M%S}.json"
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(data, ensure_ascii=False).replace(key, "***"), encoding="utf-8")
-    out = parse_recurrence(data)
-    _cache[ck] = (time.time(), out)
-    return out
+    """Off until flood_history_tambon exists (see the module docstring); then {tambon, amphoe, province, years, source}
+    for the sub-district at the point, the shape answer.recurrence_text reads. Makes no network call."""
+    return None
