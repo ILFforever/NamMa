@@ -143,6 +143,8 @@ def _shelter_desc(s: dict, need_patients: bool) -> str:
         tags.append("รับผู้ป่วยติดเตียง")
     elif need_patients:
         tags.append("ไม่ได้ระบุว่ารับผู้ป่วยติดเตียง" if ok is None else "ไม่รับผู้ป่วยติดเตียง")
+    if s["distance_km"] > FAR_STATION_KM:
+        tags.append("ไกล โทร 1784 ถามศูนย์ที่ใกล้กว่า")
     unit = "เขต" if s.get("province") == "กรุงเทพมหานคร" else "อ."
     where = f" {unit}{s['district']}" if s.get("district") else ""
     return f"{s['name']}{where} ห่าง {s['distance_km']:.1f} กม." + (f" ({', '.join(tags)})" if tags else "")

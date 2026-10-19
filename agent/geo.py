@@ -21,7 +21,13 @@ PROVINCE_ALIASES = {
 # ("แม่อาย|ุ 85"), not after a leading vowel ("เ|ลี้ยง"), not after "ชื่อ" ("ผมชื่อบางปะอิน").
 _BAD_NEXT = re.compile("[\u0e30-\u0e3a\u0e45\u0e47-\u0e4e]")
 _LEAD_VOWELS = "\u0e40\u0e41\u0e42\u0e43\u0e44"
-_NOT_AFTER = ("ชื่อ", "ชื่อว่า", "นามสกุล")
+_NOT_AFTER = ("ชื่อ", "ชื่อว่า", "นามสกุล", "เขื่อน", "อุทยาน", "อ่างเก็บน้ำ", "อินท")
+# Names that are also ordinary words ("แถวเลย", "ท่าเรือ" = a pier, "นนท์" in "อินทนนท์"): only after อ./ต./จ.,
+# อำเภอ/ตำบล/จังหวัด, or as the first word of the message.
+AMBIGUOUS = {"เลย", "ตาก", "แพร่", "สอง", "ลอง", "ลี้", "พาน", "ธาตุ", "ท่าเรือ"}
+ADMIN_CUES = ("จังหวัด", "จ.", "อำเภอ", "อ.", "ตำบล", "ต.", "เขต", "แขวง")
+# Romanised places people type: replaced by the Thai name before matching.
+ROMAN = {"bangban": "บางบาล", "bangbal": "บางบาล", "bangpain": "บางปะอิน"}
 # Short names are often everyday words ("เลย", "ตาก", "สอง", "ลอง", "ธาตุ"): they need a place word right before them.
 CUES = ("จังหวัด", "จ.", "อำเภอ", "อ.", "ตำบล", "ต.", "เขต", "แขวง", "อยู่", "แถว", "ที่", "ย่าน", "ใกล้",
         "ดอย", "เขา", "ตีน", "เชิง", "วัด", "ตลาด", "ถนน", "ถ.", "หมู่บ้าน")
@@ -70,6 +76,8 @@ def _gazetteer() -> list[Place]:
 def _norm(text: str) -> tuple[str, str]:
     """(the text without spaces, lowercased; the text with single spaces) for matching."""
     spaced = " ".join(text.lower().split())
+    for en, th in ROMAN.items():                       # "bang ban" and "bangban" alike
+        spaced = spaced.replace(en[:4] + " " + en[4:], th).replace(en, th)
     return spaced.replace(" ", ""), spaced
 
 
@@ -85,7 +93,12 @@ def _names(name: str, text: str, spaced: str, need_cue: bool = False) -> bool:
         before = text[:i]
         if before.endswith(_NOT_AFTER):
             continue
-        if before.endswith(CUES) or (i == 0 and (spaced == name or spaced.startswith(name + " "))):
+        opens = i == 0 and (spaced == name or spaced.startswith(name + " "))
+        if name in AMBIGUOUS:
+            if opens or before.endswith(ADMIN_CUES):
+                return True
+            continue
+        if before.endswith(CUES) or opens:
             return True
         if not need_cue and len(name) > SHORT:
             return True
@@ -100,8 +113,7 @@ def find_place(text: str) -> Place | None:
     or unambiguous.
     """
     text, spaced = _norm(text)
-    provinces = {v for a, v in PROVINCE_ALIASES.items() if _names(a, text, spaced) or
-                 (len(a) <= SHORT and a in text and not _BAD_NEXT.match(text[text.index(a) + len(a):][:1] or " "))}
+    provinces = {v for a, v in PROVINCE_ALIASES.items() if _names(a, text, spaced)}
     places = _gazetteer()
     provinces |= {p.province for p in places if not p.amphoe and _names(p.province, text, spaced)}
 

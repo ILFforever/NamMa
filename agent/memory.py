@@ -10,7 +10,8 @@ from agent import llm
 SENSITIVE = {"household", "needs"}
 FIELDS = ("household", "house", "assets", "needs", "history")
 
-WHO = r"(คุณยาย|คุณตา|ยาย|ตา|ปู่|ย่า|พ่อ|แม่|ลูก|สามี|ภรรยา|น้อง|พี่|หลาน|ป้า|ลุง|น้า|อา)"
+WHO = (r"(คุณยาย|คุณตา|แม่ยาย|พ่อตา|ลูกชาย|ลูกสาว|น้องชาย|น้องสาว|พี่ชาย|พี่สาว|ยาย|ตา|ปู่|ย่า|พ่อ|แม่|ลูก|สามี|"
+       r"ภรรยา|เมีย|ผัว|น้อง|พี่|หลาน|ป้า|ลุง|น้า|อา)")
 IMMOBILE = r"(ติดเตียง|เดินไม่ได้|นั่งรถเข็น|ป่วยติดเตียง|อัมพาต)"
 
 SYSTEM = """You extract durable facts a Thai user has explicitly stated about their household for a flood assistant.
@@ -27,9 +28,14 @@ and questions ("ที่ไหนรับคนติดเตียง")."""
 # What a sensitive or household word is NOT a fact about the person's own home after: a negation, another household,
 # or a shelter that takes such people ("รับคนติดเตียง"). "เดินไม่ได้" itself is a fact, so "ไม่ได้" after เดิน/ขยับ is not.
 _TERMS = (r"(ติดเตียง|เดินไม่ได้|นั่งรถเข็น|อัมพาต|ผู้สูงอายุ|คนแก่|คนชรา|เด็กเล็ก|ลูกเล็ก|ทารก|ลูกอ่อน|ตั้งครรภ์|"
-          r"ท้องแก่|คนท้อง|ฟอกไต|ล้างไต|ออกซิเจน|เครื่องช่วยหายใจ|กินยา|ยาประจำ|หมา|แมว|สุนัข|สัตว์เลี้ยง)")
-_NOT_OURS = re.compile(r"(ไม่มี|(?<!เดิน)(?<!ขยับ)(?<!ตัว)ไม่ได้|ไม่ใช่|เลิก|หายจาก|รับ|เพื่อนบ้าน|ข้างบ้าน|บ้านข้างๆ|"
-                       r"บ้านอื่น|เพื่อน)\S{0,8}?" + _TERMS)
+          r"ท้องแก่|คนท้อง|ท้อง|ฟอกไต|ฟอกเลือด|ล้างไต|ออกซิเจน|เครื่องช่วยหายใจ|ซีแพพ|cpap|กินยา|ยาประจำ|อินซูลิน|"
+          r"หมา|แมว|สุนัข|สัตว์เลี้ยง)")
+# Before the word: a negation, another household, a past condition, a shelter that takes such people. After it:
+# "หายแล้ว" (better now). A relative who lives somewhere else ("ยายอยู่เชียงใหม่ติดเตียง") is another household.
+_NOT_OURS = re.compile(r"(ไม่มี|(?<!เดิน)(?<!ขยับ)(?<!ตัว)ไม่ได้|ไม่ใช่|เลิก|หายจาก|เคย|รับ|ที่พักกับ|ศูนย์|"
+                       r"เพื่อนบ้าน|ข้างบ้าน|บ้านข้างๆ|บ้านอื่น|เพื่อน|" + WHO + r"อยู่(?!บ้าน|ด้วย|กับ|ที่บ้าน)\S{2,14}?)"
+                       r"\S{0,8}?" + _TERMS + r"|" + _TERMS + r"\S{0,12}?(หายแล้ว|หายดีแล้ว|ตอนนี้หาย)")
+_NEGATED = re.compile(r"(ไม่มี|(?<!เดิน)(?<!ขยับ)(?<!ตัว)ไม่ได้|ไม่ใช่|เลิก|พิมพ์ผิด)\S{0,8}?" + _TERMS)
 _HYPOTHETICAL = re.compile(r"ถ้า|หาก|สมมติ")
 
 
@@ -43,20 +49,22 @@ def extract_rules(text: str) -> dict:
         hh["immobile"] = ["สมาชิกในบ้าน"]
     if re.search(r"ผู้สูงอายุ|คนแก่|คนชรา", t):
         hh["elderly"] = True
-    if re.search(r"เด็กเล็ก|ลูกเล็ก|ทารก|ลูกอ่อน", t) or any(int(n) <= 6 for n in re.findall(r"(\d+)ขวบ", t)):
+    young = [int(n) for n in re.findall(r"(?:ลูก|หลาน)\S{0,12}?(\d+)(?:ขวบ|ปี)", t) + re.findall(r"(\d+)ขวบ", t)]
+    if (re.search(r"เด็กเล็ก|ลูกเล็ก|ทารก|ลูกอ่อน|ลูกคนเล็ก|(ลูก|หลาน)\S{0,6}?\d+เดือน", t)
+            or any(n <= 6 for n in young)):
         hh["children"] = True
-    if re.search(r"ตั้งครรภ์|ท้องแก่|คนท้อง", t):
+    if re.search(r"ตั้งครรภ์|ท้องแก่|คนท้อง|ท้อง\d+เดือน|(ภรรยา|เมีย|แฟน|ลูกสาว|ลูกสะใภ้)\S{0,4}?ท้อง", t):
         hh["pregnant"] = True
     pets = re.findall(r"(หมา|แมว|สุนัข|สัตว์เลี้ยง)", t)
     if pets and re.search(r"มี|เลี้ยง", t):
         hh["pets"] = sorted(set(pets))
-    if "ฟอกไต" in t or "ล้างไต" in t:
+    if "ฟอกไต" in t or "ล้างไต" in t or "ฟอกเลือด" in t:
         needs["dialysis"] = True
     if "ออกซิเจน" in t:
         needs["oxygen"] = True
-    if "เครื่องช่วยหายใจ" in t or "ใช้ไฟฟ้า" in t:
+    if re.search(r"เครื่องช่วยหายใจ|ใช้ไฟฟ้า|ซีแพพ|cpap|ต้องใช้ไฟ", t, re.I):
         needs["power_dependent"] = True
-    if re.search(r"กินยา|ยาประจำ|ยาโรค", t):
+    if re.search(r"กินยา|ยาประจำ|ยาโรค|อินซูลิน|ยาความดัน|ยาเบาหวาน", t):
         needs["medication"] = True
     if re.search(r"บ้านชั้นเดียว|บ้าน1ชั้น", t):
         house["stories"] = 1
@@ -66,7 +74,7 @@ def extract_rules(text: str) -> dict:
         house["raised"] = True
     if re.search(r"ติดคลอง|ริมคลอง|ใกล้คลอง|ริมแม่น้ำ|ติดแม่น้ำ|ใกล้แม่น้ำ|ริมน้ำ", t):
         house["near_water"] = True
-    if re.search(r"มีรถยนต์|มีรถเก๋ง|มีรถกระบะ|มีรถ(?!มอ)", t):
+    if re.search(r"มีรถยนต์|มีรถเก๋ง|มีรถกระบะ|มีรถ(?!มอ|เข็น)", t):
         assets["car"] = True
     if re.search(r"มอเตอร์ไซค์|มอไซ|จักรยานยนต์", t):
         assets["motorbike"] = True
@@ -75,6 +83,11 @@ def extract_rules(text: str) -> dict:
         hist["past_floods"] = [m.group(0)]
     facts = {k: v for k, v in zip(FIELDS, (hh, house, assets, needs, hist)) if v}
     return _drop_hypothetical(text, facts)
+
+
+def negates_sensitive(text: str) -> bool:
+    """"ยายไม่ได้ติดเตียง", "เมื่อกี้พิมพ์ผิด": a correction, so facts waiting for consent are dropped."""
+    return bool(_NEGATED.search(text.replace(" ", "")))
 
 
 def _drop_hypothetical(text: str, facts: dict) -> dict:
@@ -108,11 +121,11 @@ def merged_view(memory: dict, pending: dict) -> dict:
 def location_label(text: str) -> str | None:
     """'บ้านแม่อยู่บางระกำ' → 'บ้านแม่'. First-person homes collapse to 'บ้าน'."""
     t = text.replace(" ", "")
-    m = re.search(r"(บ้าน\S{0,12}?)(?:อยู่|ที่|แถว)", t)
+    m = re.search(r"((?:บ้าน|ร้าน|โรงเรียน|คอนโด)\S{0,12}?|ที่ทำงาน|ออฟฟิศ|หอพัก|โรงงาน)(?:อยู่|ที่|แถว)", t)
     if not m:
         return None
     label = m.group(1)
-    if re.fullmatch(r"บ้าน(ผม|ฉัน|หนู|เรา|ดิฉัน|กู|เค้า|ตัวเอง)?", label):
+    if re.fullmatch(r"บ้าน(ผม|ฉัน|หนู|เรา|ดิฉัน|กู|เค้า|ตัวเอง|ข้า|เอง)?", label):
         return "บ้าน"
     return label
 
