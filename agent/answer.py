@@ -80,13 +80,18 @@ def flood_extent_text(extent: dict, approx: bool) -> str:
     return f"ภาพดาวเทียม GISTDA {extent['days']} วันล่าสุด: {body} (ข้อมูล ณ {_ts(extent['as_of'])})"
 
 
-def recurrence_text(rec: dict) -> str | None:
-    """One line from agent.gistda.get_flood_recurrence: the years the subdistrict flooded, 2011–2023."""
+def recurrence_text(rec: dict, approx: bool = False) -> str | None:
+    """One line from agent.gistda.get_flood_recurrence: the years the subdistrict flooded, 2011–2024, and at a GPS
+    point (not a place found by name, which is only a district centre) whether the point itself did."""
     years = rec.get("years") or []
     if not years:
         return None
     where = f"ต.{rec['tambon']}" if rec.get("tambon") else "พื้นที่นี้"
-    return f"สถิติ GISTDA 2011–2023: {where} มีน้ำท่วม {len(years)} ปี (ล่าสุดปี {max(years)})"
+    line = f"สถิติ GISTDA 2011–2024: {where} มีน้ำท่วม {len(years)} ปี (ล่าสุดปี {max(years)})"
+    if approx or "at_point" not in rec:
+        return line
+    here = rec["at_point"]
+    return line + (f" จุดนี้เองท่วม {len(here)} ปี" if here else " ไม่พบน้ำท่วมที่จุดนี้เอง")
 
 
 def rule_advice(tier: str, memory: dict) -> list[str]:
@@ -194,7 +199,7 @@ def risk_answer(place_label: str, approx: bool, stations: list[dict], shelters: 
         lines += station_lines(worst)
     if extent is not None:
         lines.append("🛰️ " + flood_extent_text(extent, approx))
-    if recurrence is not None and (rec := recurrence_text(recurrence)):
+    if recurrence is not None and (rec := recurrence_text(recurrence, approx)):
         lines.append("🛰️ " + rec)
     lines.append("⚠️ ค่านี้วัดที่สถานีริมแม่น้ำ ไม่ใช่ระดับน้ำที่บ้านโดยตรง ใช้เป็นการประเมินเท่านั้น")
     facts = "\n".join(lines)

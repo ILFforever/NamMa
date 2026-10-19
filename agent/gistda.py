@@ -2,14 +2,13 @@
 
 - Extent comes from the 3-day and 7-day layers ingest/gistda_flood.py stores (the old flood-extent-1day point query
   is dead), so a chat reply makes no GISTDA call for it.
-- Recurrence is off until we hold our own copy of GISTDA's flood history. The old point query
-  (gi-service/v1.0/disasters/flood-recurrence) is dead (404, checked from the VM 2026-10-19), and its replacement,
-  features/flood-freq, takes 20 s to over 60 s for a map-box query, too slow for a chat reply. The copy plan
-  (docs: "GISTDA flood history: own copy plan") fills flood_history_cells / flood_history_tambon; then
-  get_flood_recurrence reads from those.
+- Recurrence comes from our own copy of GISTDA's flood history (flood_history_cells / flood_history_tambon, filled
+  by ingest/gistda_history.py one province at a time), so a chat reply makes no GISTDA call for it either. The old
+  point query (gi-service/v1.0/disasters/flood-recurrence) is dead, and features/flood-freq takes 20 s to over 60 s
+  by map box, too slow for a chat reply.
 
-Both return None when there is nothing to say (no layer stored yet, no copy yet): GISTDA is extra context,
-never a blocker for an answer.
+Both return None when there is nothing to say (no layer stored yet, province not copied yet): GISTDA is extra
+context, never a blocker for an answer.
 """
 import math
 
@@ -17,10 +16,12 @@ import h3
 from psycopg.rows import dict_row
 
 from agent.geo import haversine_km
+from ingest.gistda_history import RES as HISTORY_RES, years_of
 from ingest.thaiwater import BKK
 
 NEAR_KM = 5.0
 DAYS = {"3days": 3, "7days": 7}
+TAMBON_KM = 2.0     # the sub-district is the one of the nearest historically flooded cell within this
 
 
 def check_flood_extent(conn, lat: float, lon: float) -> dict | None:
@@ -56,7 +57,27 @@ def check_flood_extent(conn, lat: float, lon: float) -> dict | None:
             "source": "GISTDA"}
 
 
-def get_flood_recurrence(lat: float, lon: float) -> dict | None:
-    """Off until flood_history_tambon exists (see the module docstring); then {tambon, amphoe, province, years, source}
-    for the sub-district at the point, the shape answer.recurrence_text reads. Makes no network call."""
-    return None
+def get_flood_recurrence(conn, lat: float, lon: float) -> dict | None:
+    """{tambon, amphoe, province, years, at_point, source}: the years GISTDA saw flooding in the sub-district of the
+    nearest historically flooded cell within TAMBON_KM, and the years the point's own cell flooded ([] if never).
+    None when no flooded cell lies that close: the province is not copied yet, or the area never flooded."""
+    dlat = TAMBON_KM / 111.0
+    dlon = TAMBON_KM / (111.0 * max(math.cos(math.radians(lat)), 0.1))
+    with conn.cursor(row_factory=dict_row) as cur:
+        rows = cur.execute("SELECT h3, lat, lon, years, tb_code FROM flood_history_cells "
+                           "WHERE lat BETWEEN %s AND %s AND lon BETWEEN %s AND %s",
+                           (lat - dlat, lat + dlat, lon - dlon, lon + dlon)).fetchall()
+        near = sorted(((haversine_km(lat, lon, r["lat"], r["lon"]), r) for r in rows), key=lambda x: x[0])
+        near = [r for d, r in near if d <= TAMBON_KM]
+        if not near:
+            return None
+        here = h3.latlng_to_cell(lat, lon, HISTORY_RES)
+        at_point = 0
+        for r in near:
+            at_point |= r["years"] if r["h3"] == here else 0
+        tb = next((r["tb_code"] for r in near if r["tb_code"]), None)
+        t = cur.execute("SELECT tambon, amphoe, province, years FROM flood_history_tambon WHERE tb_code = %s",
+                        (tb,)).fetchone() if tb else None
+    years = years_of(t["years"]) if t else years_of(near[0]["years"])
+    return {"tambon": t and t["tambon"], "amphoe": t and t["amphoe"], "province": t and t["province"],
+            "years": years, "at_point": years_of(at_point), "source": "GISTDA (2011–2024)"}

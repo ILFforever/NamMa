@@ -10,6 +10,7 @@ import h3
 import httpx
 import pytest
 
+from agent import answer, gistda
 from ingest import gistda_history as gh
 
 KEY = "k-secret-123"
@@ -197,3 +198,23 @@ def test_run_province_stores_and_rebuilds_from_disk(api, fast):
     row = conn.execute("SELECT number_matched, shapes, pages, download_s IS NOT NULL FROM flood_history_runs").fetchone()
     assert row == (7, 7, 3, True)                             # the first run's download time is kept
     assert conn.execute("SELECT count(*) FROM flood_history_tambon").fetchone()[0] == 7
+
+
+def test_chat_recurrence_reads_our_copy(api, fast, monkeypatch):
+    _, conn = api
+    monkeypatch.setattr(httpx, "get", lambda *a, **k: pytest.fail("chat must not call GISTDA for recurrence"))
+    assert gistda.get_flood_recurrence(conn, *BANG_BAN) is None                  # province not copied yet
+    pages = {0: [_shape([2011, 2012, 2013]), _shape([2017, 2024], at=(BANG_BAN[0] + 0.01, BANG_BAN[1]), half=0.002)]}
+    gh.run_province(conn, "14", KEY, _gistda(pages, total=2)[0])
+
+    rec = gistda.get_flood_recurrence(conn, *BANG_BAN)
+    assert (rec["tambon"], rec["amphoe"]) == ("บางบาล", "บางบาล")
+    assert rec["years"] == [2011, 2012, 2013, 2017, 2024] and rec["at_point"] == [2011, 2012, 2013]
+    assert answer.recurrence_text(rec) == \
+        "สถิติ GISTDA 2011–2024: ต.บางบาล มีน้ำท่วม 5 ปี (ล่าสุดปี 2024) จุดนี้เองท่วม 3 ปี"
+    assert answer.recurrence_text(rec, approx=True).endswith("(ล่าสุดปี 2024)")    # a district centre: no point claim
+
+    beside = gistda.get_flood_recurrence(conn, BANG_BAN[0] - 0.008, BANG_BAN[1])   # ~300 m outside the shapes
+    assert beside["at_point"] == [] and beside["years"] == rec["years"]
+    assert answer.recurrence_text(beside).endswith("ไม่พบน้ำท่วมที่จุดนี้เอง")
+    assert gistda.get_flood_recurrence(conn, 15.5, 100.46) is None                  # nothing flooded within 2 km

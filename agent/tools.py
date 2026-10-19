@@ -91,8 +91,8 @@ def check_flood_extent(conn, lat: float, lon: float) -> dict | None:
     return gistda.check_flood_extent(conn, lat, lon)
 
 
-def get_flood_recurrence(lat: float, lon: float) -> dict | None:
-    return gistda.get_flood_recurrence(lat, lon)
+def get_flood_recurrence(conn, lat: float, lon: float) -> dict | None:
+    return gistda.get_flood_recurrence(conn, lat, lon)
 
 
 SHELTER_BOX_DEG = 0.6            # ~65 km: look here first; the whole table only if nothing is that close
