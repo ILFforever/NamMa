@@ -5,7 +5,7 @@ from fastapi import APIRouter, BackgroundTasks, HTTPException, Request
 
 from agent import chat
 from common.db import connect
-from line import client
+from line import cards, client
 
 router = APIRouter()
 
@@ -38,7 +38,22 @@ def _handle_event(ev: dict) -> None:
         # Never leave someone who may be in danger with no answer.
         print(f"chat failed for LINE event: {e!r}", flush=True)
         r = chat.Reply(FALLBACK)
-    client.reply(token, [client.text_message(r.text, r.quick)])
+    text_only = [client.text_message(r.text, r.quick)]
+    try:
+        rich = cards.risk_messages(r)
+    except Exception as e:
+        print(f"LINE card build failed: {e!r}", flush=True)
+        rich = None
+    if rich:
+        qr = client.quick_reply(r.quick)
+        if qr:
+            rich[-1]["quickReply"] = qr
+        try:
+            client.reply(token, rich)
+            return
+        except Exception as e:   # a rejected card must never cost the user their answer
+            print(f"LINE rich reply failed, sending text: {e!r}", flush=True)
+    client.reply(token, text_only)
 
 
 @router.post("/line/webhook")
