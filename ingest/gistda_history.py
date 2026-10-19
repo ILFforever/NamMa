@@ -85,6 +85,7 @@ def parse_shape(f: dict) -> dict:
     out = {"years": mask, "geometry": f.get("geometry") if isinstance(f, dict) else None}
     hit = gf._first(low, FREQ_KEYS)
     out["freq_gistda"] = gf._num(hit[1]) if hit else None
+    out["area_rai"] = gf._num(low.get("area_rai"))    # GISTDA's own area; shapes are mostly far smaller than a cell
     for field, keys in gf.NAME_KEYS.items():
         hit = gf._first(low, keys)
         out[field] = gf._name(hit[1]) if hit else None
@@ -123,7 +124,8 @@ def build(pages, pv: str) -> tuple[list[dict], list[dict], dict]:
                 continue
             if s["freq_gistda"] is not None and int(s["freq_gistda"]) != s["years"].bit_count():
                 n["freq_mismatch"] += 1
-            for c in cells_of(s["geometry"]):
+            shape_cells = cells_of(s["geometry"])
+            for c in shape_cells:
                 if c in cells:
                     cells[c][0] |= s["years"]
                 else:
@@ -136,16 +138,15 @@ def build(pages, pv: str) -> tuple[list[dict], list[dict], dict]:
                                         "years": 0, "shapes": 0, "rai_by_year": {}})
             t["years"] |= s["years"]
             t["shapes"] += 1
+            rai = s["area_rai"] if s["area_rai"] is not None else \
+                sum(h3.cell_area(c, "km^2") for c in shape_cells) * RAI_PER_KM2
+            for y in years_of(s["years"]):
+                t["rai_by_year"][str(y)] = t["rai_by_year"].get(str(y), 0.0) + rai
     cell_rows = []
     for c, (years, ap, tb) in cells.items():
         lat, lon = h3.cell_to_latlng(c)
         cell_rows.append({"pv_code": pv, "h3": c, "lat": lat, "lon": lon, "years": years, "freq": years.bit_count(),
                           "ap_code": ap, "tb_code": tb})
-        if tb in tambons:
-            rai = h3.cell_area(c, "km^2") * RAI_PER_KM2
-            by_year = tambons[tb]["rai_by_year"]
-            for y in years_of(years):
-                by_year[str(y)] = by_year.get(str(y), 0.0) + rai
     for t in tambons.values():
         t["freq"] = t["years"].bit_count()
         t["rai_by_year"] = {y: round(r, 1) for y, r in sorted(t["rai_by_year"].items())}
