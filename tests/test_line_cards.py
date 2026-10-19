@@ -47,3 +47,44 @@ def test_card_not_saved_has_no_saved_line_and_marks_approx():
     place = {**PLACE, "saved_label": None, "approx": True}
     dumped = json.dumps(cards.risk_messages(reply(place=place))[1], ensure_ascii=False)
     assert "บันทึกเป็น" not in dumped and "ประมาณจากชื่อพื้นที่" in dumped
+
+
+# The LightGBM horizons as model.forecast.score writes them and tools.get_nearest_stations returns them.
+MODEL = {"12": {"level": 4.95, "mae_cm": 8.4, "diff_wl_bank": -0.12},
+         "24": {"level": 5.10, "mae_cm": 12.6, "diff_wl_bank": 0.03}}
+FORECAST_ROW = "แบบจำลองคาดการณ์"
+
+
+def _rows(card) -> list[str]:
+    """The labels of the station's water rows, top to bottom."""
+    water = card["body"]["contents"][3]["contents"]
+    return [r["contents"][0]["text"] for r in water]
+
+
+def test_modelled_station_card_shows_forecast_after_trend():
+    msgs = cards.risk_messages(reply(sources=[{**SOURCES[0], "model": MODEL}] + SOURCES[1:]))
+    card = msgs[1]["contents"]
+    assert _rows(card) == ["ระดับน้ำ", "3 ชม.ล่าสุด", FORECAST_ROW, "ถึงตลิ่ง"]
+    value = card["body"]["contents"][3]["contents"][2]["contents"][1]["text"]
+    assert value == "+12 ชม. ต่ำกว่าตลิ่ง 0.12 ม. (±8 ซม.)\n+24 ชม. สูงกว่าตลิ่ง 0.03 ม. (±13 ซม.)"
+    assert len(json.dumps(card, ensure_ascii=False).encode()) < 30_000      # LINE's limit for one bubble
+
+
+def test_station_without_model_card_has_no_forecast():
+    for st in (SOURCES[0], {**SOURCES[0], "model": None}):
+        card = cards.risk_messages(reply(sources=[st] + SOURCES[1:]))[1]["contents"]
+        assert FORECAST_ROW not in json.dumps(card, ensure_ascii=False)
+        assert _rows(card) == ["ระดับน้ำ", "3 ชม.ล่าสุด", "ถึงตลิ่ง"]
+
+
+def test_forecast_reaches_card_through_chat_sources():
+    """get_nearest_stations → chat._sources → card: the station Source carries the model, as the reply text does."""
+    from agent import chat
+    station = {"station_id": 2609, "code": "C.35", "name_th": "บ้านป้อม", "river": "แม่น้ำเจ้าพระยา", "agency": "RID",
+               "distance_km": 3.2, "reading_ts": "2026-10-14T15:00:00+07:00", "level_msl": 4.9, "diff_wl_bank": -0.2,
+               "trend_3h_cm_per_hr": 1.2, "hours_to_bank": 17.0, "risk_tier": "watch", "upstream": [], "model": MODEL}
+    for st, shown in ((station, True), ({**station, "model": None}, False)):
+        sources = chat._sources([st], [], None, None, approx=False)
+        assert sources[0]["model"] == st["model"]
+        dumped = json.dumps(cards.risk_messages(reply(sources=sources))[1], ensure_ascii=False)
+        assert ("+12 ชม. ต่ำกว่าตลิ่ง 0.12 ม. (±8 ซม.)" in dumped) is shown

@@ -188,9 +188,11 @@ Request: `{ session_id, message? | postback? | location?: { lat, lon } }`. Exact
 
 - **Station sources carry the reading** the web StationCard draws, so the card shows exactly the numbers the reply used:
   `{ type: "station", station_id, code, name_th, distance_km, observed_at, river, agency, amphoe, province,
-  level_msl, diff_wl_bank, bank_msl, trend_cm_per_hr, hours_to_bank, risk_tier, upstream_over: string[] }`.
+  level_msl, diff_wl_bank, bank_msl, trend_cm_per_hr, hours_to_bank, risk_tier, upstream_over: string[], model }`.
   `diff_wl_bank` is signed (+ over bank); `bank_msl` = `level_msl − diff_wl_bank`; `trend_cm_per_hr` is the 3 h trend;
   `upstream_over` lists upstream station codes already over bank. Any of the reading fields can be null.
+  `model` is the LightGBM forecast, `{ "<hours>": { level, diff_wl_bank, mae_cm } }`, only at the modelled corridor
+  stations (null elsewhere). The reply text already says it; the LINE card shows it as a row.
 - **GISTDA sources** (`{ type: "gistda", kind, summary, observed_at }`) repeat the reply's satellite lines:
   - `flood_extent`, from the stored 3-day layer (7-day when the 3-day one is empty): at a GPS point, flooded or not and
     the nearest flooded cell; around a place found by name (a district centre), the flooded area within 5 km.

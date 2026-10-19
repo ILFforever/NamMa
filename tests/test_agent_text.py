@@ -113,6 +113,18 @@ def test_risk_answer_names_source_and_1784():
     assert "ยาย" in txt and "C.7A" in txt
 
 
+
+def test_risk_answer_line_text_has_forecast_only_for_modelled_station():
+    """The LINE text (the full reply, also the fallback when a card is rejected) puts the forecast after the trend."""
+    model = {"12": {"level": 5.0, "mae_cm": 8.4, "diff_wl_bank": 0.65}}
+    txt, _ = answer.risk_answer("บ้านแม่", False, [{**STATION, "model": model}], [], {})
+    lines = txt.split("\n")
+    i = lines.index("• แบบจำลองคาดการณ์: +12 ชม. สูงกว่าตลิ่ง 0.65 ม. (±8 ซม.)")
+    assert lines[i - 1].startswith("• 3 ชม.ล่าสุด") and txt.index("สิ่งที่ควรทำตอนนี้") > txt.index(lines[i])
+    assert len(txt) < 5000
+    for st in (STATION, {**STATION, "model": None}):
+        assert "แบบจำลองคาดการณ์" not in answer.risk_answer("บ้านแม่", False, [st], [], {})[0]
+
 SHELTER = {"id": 7, "name": "โรงเรียนวัดกอไผ่", "district": "บางบาล", "distance_km": 1.9, "is_open": True,
            "capacity": 60, "current_residents": 5, "patients_ok": None, "source": "ddpm"}
 

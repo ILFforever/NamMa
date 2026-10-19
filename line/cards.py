@@ -1,7 +1,7 @@
 """LINE rich replies for a risk answer: a native map pin (like a shared location) plus a Flex card.
 Every number comes from the Source objects the agent already built from tool output (rule 1); this only lays them out.
 """
-from agent.answer import _ts
+from agent.answer import _forecast, _ts
 from agent.risk import TIER_TH
 
 TIER_COLOR = {"normal": "#2F9E44", "watch": "#F59F00", "warning": "#F76707", "danger": "#E03131"}
@@ -45,6 +45,8 @@ def _water_rows(st: dict) -> list[dict]:
         rows.append(_row("3 ชม.ล่าสุด", f"น้ำลง {abs(t):.1f} ซม./ชม."))
     else:
         rows.append(_row("3 ชม.ล่าสุด", "ทรงตัว"))
+    if forecast := _forecast(st):       # one horizon per line, as the level row splits its two parts
+        rows.append(_row("แบบจำลองคาดการณ์", forecast.replace(" · ", "\n")))
     if st.get("hours_to_bank") is not None:
         rows.append(_row("ถึงตลิ่ง", f"ราว {st['hours_to_bank']:.0f} ชม. (ประมาณการ)"))
     if st.get("upstream_over"):

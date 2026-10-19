@@ -513,7 +513,8 @@ def _station_source(s: dict) -> dict:
             "trend_cm_per_hr": s.get("trend_3h_cm_per_hr"), "hours_to_bank": s.get("hours_to_bank"),
             "risk_tier": s.get("risk_tier"),
             "upstream_over": [answer.display_code(u["oldcode"]) for u in s.get("upstream") or []
-                              if u.get("risk_tier") == "danger"]}
+                              if u.get("risk_tier") == "danger"],
+            "model": s.get("model")}     # forecast horizons, only at the modelled corridor stations; the LINE card shows them
 
 
 def _shelter_source(sh: dict, need_patients: bool) -> dict:
