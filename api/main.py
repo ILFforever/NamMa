@@ -1,6 +1,7 @@
-"""The one always-warm app (CLAUDE.md §3): LINE webhook, web API, responder dashboard, scheduler.
+"""The one always-warm app (CLAUDE.md §3): LINE webhook, web API, the built web app, scheduler.
 
-    uvicorn api.main:app --port 8000        # SCHEDULER=1 also runs ingest → risk → alerts every 10 min
+    uvicorn api.main:app --port 8000        # SCHEDULER=1 also runs ingest → risk → alerts every 10 min,
+                                            # and the GISTDA flood layers every 3 h when GISTDA_API_KEY is set
 """
 import os
 import threading
@@ -16,18 +17,22 @@ from pydantic import BaseModel  # noqa: E402
 from agent import alerts, jobs, risk
 from common.config import ROOT
 from common.db import connect
+from ingest import gistda_flood
 from line.webhook import router as line_router
-from api import auth, chat_web, profile, stations, tickets
+from api import auth, chat_web, flood, profile, stations
 from api.common import install_error_handlers
 
 DEMO = os.environ.get("DEMO_MODE", "1") == "1"
-
 
 
 @asynccontextmanager
 async def lifespan(_app):
     if os.environ.get("SCHEDULER") == "1":
         threading.Thread(target=jobs.loop, args=(int(os.environ.get("SCHEDULER_EVERY", "600")),), daemon=True).start()
+        # Its own thread: a full layer is a download of several minutes and must not hold up the water ingest.
+        if os.environ.get("GISTDA_API_KEY"):
+            threading.Thread(target=gistda_flood.loop, args=(int(os.environ.get("GISTDA_EVERY", "10800")),),
+                             daemon=True).start()
     yield
 
 
@@ -35,7 +40,7 @@ app = FastAPI(title="NamMa", lifespan=lifespan)
 install_error_handlers(app)
 app.include_router(line_router)
 # Web API contract: docs/api.md (+ src/api/types.ts in namma-web).
-for module in (auth, stations, tickets, chat_web, profile):
+for module in (auth, stations, flood, chat_web, profile):
     app.include_router(module.router)
 
 
@@ -60,11 +65,16 @@ class Simulate(BaseModel):
     tier: str = "danger"
 
 
-@app.post("/api/demo/simulate", dependencies=[Depends(auth.require_responder)])
-def api_simulate(body: Simulate):
-    """Demo step 3: force a tier jump at one station and run the alert job right away."""
+def require_demo(user: dict = Depends(auth.require_user)) -> dict:
+    """Demo controls: DEMO_MODE on and a signed-in session (demo login is enough). Off in production."""
     if not DEMO:
         raise HTTPException(403, "DEMO_MODE off")
+    return user
+
+
+@app.post("/api/demo/simulate", dependencies=[Depends(require_demo)])
+def api_simulate(body: Simulate):
+    """Demo step 3: force a tier jump at one station and run the alert job right away."""
     if body.tier not in risk.TIERS:
         raise HTTPException(400, "bad tier")
     with connect() as conn:
@@ -77,7 +87,7 @@ def api_simulate(body: Simulate):
     return {"ok": True, "alerts_sent": sent}
 
 
-@app.post("/api/demo/refresh", dependencies=[Depends(auth.require_responder)])
+@app.post("/api/demo/refresh", dependencies=[Depends(require_demo)])
 def api_refresh():
     """Recompute real risk (undoes simulate)."""
     with connect() as conn:

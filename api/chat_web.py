@@ -26,8 +26,6 @@ _hits_lock = threading.Lock()
 _POSTBACK_TEXT = {
     "consent:sensitive_memory:yes": chat.CONSENT_YES,
     "consent:sensitive_memory:no": chat.CONSENT_NO,
-    "triage:confirm": chat.CONFIRM_TEXT,
-    "triage:cancel": chat.CANCEL_TEXT,
     "memory:delete_all": chat.FORGET_ALL_TEXT,
 }
 _TEXT_POSTBACK = {text: data for data, text in _POSTBACK_TEXT.items()}
@@ -65,8 +63,6 @@ def _quick_out(q: chat.QuickReply) -> dict:
     if q.kind == "location":
         return {"type": "location", "label": label}
     data = _TEXT_POSTBACK.get(q.text or "")
-    if data is None and chat.CONFIRM_RE.search(q.text or ""):
-        data = "triage:confirm"    # LINE's confirm button names a ticket; web confirms the newest one
     if data is not None:
         return {"type": "postback", "label": label, "data": data, "display_text": label}
     return {"type": "message", "label": label, "text": q.text or label}
@@ -88,7 +84,6 @@ def chat_turn(body: ChatIn, user: dict | None = Depends(current_user), conn: psy
         text = body.message
 
     _rate_limit(body.session_id)
-    # Signed-in users share memory with their LINE account; anonymous web chat is keyed by session.
     # Signed-in users chat as their account (LINE or Google); anonymous web chat is keyed by session.
     user_id = user["id"] if user else None
     external_id = None if user else f"web:{body.session_id}"
@@ -110,5 +105,4 @@ def chat_turn(body: ChatIn, user: dict | None = Depends(current_user), conn: psy
         "sources": reply.sources,
         "quick_replies": [_quick_out(q) for q in reply.quick],
         "emergency": reply.emergency,
-        "ticket_id": reply.ticket_id,
     })

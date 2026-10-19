@@ -39,11 +39,27 @@ def test_location_label():
 def test_triage():
     assert triage.is_danger("น้ำเข้าบ้านแล้ว ยายเดินไม่ได้")
     assert not triage.is_danger("น้ำจะถึงไหม")
-    f = triage.extract("น้ำเข้าบ้านแล้ว ยายเดินไม่ได้ อยู่กัน 4 คน ขอเรือ", {})
-    assert f["people_count"] == 4 and f["needs"] == ["boat"] and f["urgency"] == "critical"
-    assert any("ยาย" in v for v in f["vulnerable"])
-    f = triage.extract("ช่วยด้วย น้ำเข้าบ้าน", {"household": {"immobile": ["ตา"]}})
-    assert f["urgency"] == "critical" and f["needs"] == ["evacuation"]     # pre-filled from memory
+    d = triage.call_details("น้ำเข้าบ้านแล้ว ยายเดินไม่ได้ อยู่กัน 4 คน ขอเรือ", {})
+    assert d["people_count"] == 4 and any("ยาย" in v for v in d["vulnerable"])
+    d = triage.call_details("ช่วยด้วย น้ำเข้าบ้าน", {"household": {"immobile": ["ตา"]}, "needs": {"oxygen": True}})
+    assert d == {"people_count": None, "vulnerable": ["ตา (เดินไม่ได้/ติดเตียง)", "ใช้ออกซิเจน"]}   # from memory
+    assert triage.call_details("ช่วยด้วย", {}) == {"people_count": None, "vulnerable": []}
+
+
+def test_gistda_lines():
+    extent = {"days": 3, "at_point": False, "nearest_km": 1.2, "area_km2_nearby": 2.5, "radius_km": 5.0,
+              "as_of": "2026-10-18T13:00:00+07:00"}
+    assert answer.flood_extent_text(extent, approx=False) == \
+        "ภาพดาวเทียม GISTDA 3 วันล่าสุด: ไม่พบน้ำท่วมที่จุดนี้ พื้นที่น้ำท่วมใกล้สุดห่างราว 1.2 กม. (ข้อมูล ณ 13:00 น. 18/10)"
+    # Around a place name the point is only a district centre: the area around, not a yes/no.
+    assert "รัศมี 5 กม. รวมราว 1,562 ไร่" in answer.flood_extent_text(extent, approx=True)
+    assert "พบน้ำท่วมที่จุดนี้" in answer.flood_extent_text({**extent, "at_point": True, "nearest_km": 0.0}, False)
+    assert "ไม่พบพื้นที่น้ำท่วมในรัศมี 5 กม." in answer.flood_extent_text({**extent, "nearest_km": None}, True)
+    assert answer.recurrence_text({"tambon": "บ้านกุ่ม", "years": [2011, 2017, 2022]}) == \
+        "สถิติ GISTDA 2011–2023: ต.บ้านกุ่ม มีน้ำท่วม 3 ปี (ล่าสุดปี 2022)"
+    assert answer.recurrence_text({"years": []}) is None
+    txt = answer.risk_answer("บ้านแม่", False, [STATION], [], {}, extent, {"tambon": None, "years": [2011]})
+    assert "🛰️ ภาพดาวเทียม GISTDA 3 วันล่าสุด" in txt and "🛰️ สถิติ GISTDA 2011–2023: พื้นที่นี้" in txt
 
 
 def test_numbers_guard():

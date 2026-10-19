@@ -1,4 +1,4 @@
-"""End-to-end flow against a real Postgres: risk → chat → consent → alerts → rescue → delete.
+"""End-to-end flow against a real Postgres: risk → chat → consent → alerts → danger → delete.
 
 Uses TEST_DATABASE_URL (default: the local dev server, database namma_test, recreated each run).
 Skipped when no Postgres is reachable. Network calls (ThaiWater, GISTDA, MaaS, LINE) are disabled.
@@ -93,70 +93,50 @@ def test_full_flow(conn):
     _set_over_bank(conn, DOWN, 0.1)                                         # escalation to danger pushes again
     assert [s["tier"] for s in alerts.run(conn, NOW + timedelta(minutes=5))] == ["danger"]
 
+    # Danger: 1784 first, then what to tell them, from the message and memory. Nothing is filed anywhere.
     r = chat.handle(conn, "U-test", "line", text="น้ำเข้าบ้านแล้ว ยายเดินไม่ได้ อยู่กัน 3 คน")
-    assert r.text.startswith("🚨") and "1784" in r.text.splitlines()[0]
-    t = conn.execute("SELECT people_count, urgency, status, lat FROM rescue_tickets WHERE id = %s", (r.ticket_id,)).fetchone()
-    assert t[:3] == (3, "critical", "unconfirmed") and t[3] is not None   # location pre-filled from บ้านแม่
-    chat.handle(conn, "U-test", "line", text=f"ยืนยันขอความช่วยเหลือ #{r.ticket_id}")
-    assert conn.execute("SELECT status FROM rescue_tickets WHERE id = %s", (r.ticket_id,)).fetchone()[0] == "open"
+    assert r.text.startswith("🚨") and "1784" in r.text.splitlines()[0] and r.emergency
+    assert "ไม่ได้ส่งเรื่อง" in r.text and "ตอนโทร แจ้งว่า:" in r.text
+    assert "ยาย (เดินไม่ได้/ติดเตียง)" in r.text and "จำนวนคน: 3" in r.text
+    assert "• ตำแหน่ง: บ้านแม่ (อ.บางบาล" in r.text              # the saved place, in words 1784 can use
+    assert r.quick == []
+    assert conn.execute("SELECT to_regclass('rescue_tickets')").fetchone()[0] is None
 
     chat.handle(conn, "U-test", "line", text="ลบข้อมูลทั้งหมด")
     prof = tools.get_user_profile(conn, uid)
     assert prof["locations"] == [] and prof["memory"]["household"] == {}
 
 
-def test_shared_location_attaches_to_ticket(conn):
+def test_danger_with_nothing_known_is_the_hotline_and_what_to_do(conn):
+    r = chat.handle(conn, "U-sos", "line", text="ช่วยด้วย ติดอยู่บนหลังคา")
+    assert r.emergency and r.text.startswith(chat.RESCUE_HOTLINE)
+    assert "ตอนโทร" not in r.text and "ระหว่างรอ:" in r.text
+
+
+def test_a_gps_place_gives_coordinates_to_tell_1784(conn):
     risk.compute_all(conn, NOW)
-    r = chat.handle(conn, "U-loc", "web", text="ช่วยด้วย ติดอยู่บนหลังคา")
-    assert conn.execute("SELECT lat FROM rescue_tickets WHERE id = %s", (r.ticket_id,)).fetchone()[0] is None
-    r2 = chat.handle(conn, "U-loc", "web", location=(14.41, 100.46))
-    assert f"#{r.ticket_id}" in r2.text
-    assert conn.execute("SELECT status, lat FROM rescue_tickets WHERE id = %s", (r.ticket_id,)).fetchone() == ("open", 14.41)
+    r = chat.handle(conn, "U-gps", "web", location=(14.4321, 100.4567))
+    assert not r.emergency and "T.1" in r.text                    # a location share is a normal risk check
+    r = chat.handle(conn, "U-gps", "web", text="น้ำเข้าบ้านแล้ว ช่วยด้วย")
+    assert r.emergency and "• ตำแหน่ง: บ้าน (พิกัด 14.43210, 100.45670)" in r.text
+    # A place named in the message beats the saved one.
+    r = chat.handle(conn, "U-gps", "web", text="ช่วยด้วย น้ำเข้าบ้าน บางบาล อยุธยา")
+    assert "• ตำแหน่ง: อ.บางบาล จ.พระนครศรีอยุธยา" in r.text
 
 
-def test_responder_endpoints_need_a_responder_session(api):
-    """Tickets and the demo endpoints: 401 without a session, 403 for a plain user."""
+def test_demo_endpoints_need_a_session_and_demo_mode(api, monkeypatch):
+    from api import main
     from tests.conftest import login
 
     c, _ = api
-    assert c.get("/api/tickets").status_code == 401
-    assert c.get("/api/tickets", headers={"Authorization": "Bearer wrong"}).status_code == 401
-    assert c.get("/api/tickets", headers={"Authorization": f"Bearer {login(c, 'user')}"}).status_code == 403
-    assert c.get("/api/tickets", headers={"Authorization": f"Bearer {login(c, 'responder')}"}).status_code == 200
     assert c.post("/api/demo/simulate", json={"station_id": 1}).status_code == 401
     assert c.post("/api/demo/simulate", json={"station_id": 1}, headers={"Authorization": "Bearer wrong"}).status_code == 401
-    user, responder = (f"Bearer {login(c, r)}" for r in ("user", "responder"))
+    user = {"Authorization": f"Bearer {login(c)}"}
+    assert c.post("/api/demo/simulate", json={"station_id": 1}, headers=user).status_code == 404   # no risk row
+    assert c.post("/api/demo/refresh", headers=user).status_code == 200
+    monkeypatch.setattr(main, "DEMO", False)
     for path in ("/api/demo/simulate", "/api/demo/refresh"):
-        assert c.post(path, json={"station_id": 1}, headers={"Authorization": user}).status_code == 403
-    assert c.post("/api/demo/simulate", json={"station_id": 1}, headers={"Authorization": responder}).status_code == 404
-
-
-def test_gps_during_triage_replaces_geocoded_coordinates(conn):
-    """Triage geocodes the place name; a GPS share before confirming moves the ticket there and sends it."""
-    r = chat.handle(conn, "U-gps", "web", text="ช่วยด้วย น้ำเข้าบ้าน บางบาล อยุธยา")
-    lat0, status0 = conn.execute("SELECT lat, status FROM rescue_tickets WHERE id = %s", (r.ticket_id,)).fetchone()
-    assert lat0 is not None and lat0 != 14.4321 and status0 == "unconfirmed"
-    r2 = chat.handle(conn, "U-gps", "web", location=(14.4321, 100.4567))
-    assert r2.ticket_id == r.ticket_id and r2.emergency
-    assert conn.execute("SELECT status, lat, lon FROM rescue_tickets WHERE id = %s", (r.ticket_id,)).fetchone() == \
-        ("open", 14.4321, 100.4567)
-    # Shared location went to the ticket, not into saved places
-    assert tools.get_user_profile(conn, tools.get_or_create_user(conn, "U-gps", None))["locations"] == []
-
-
-def test_gps_updates_a_ticket_responders_already_work_on(conn):
-    risk.compute_all(conn, NOW)
-    r = chat.handle(conn, "U-gps2", "line", text="ช่วยด้วย น้ำเข้าบ้าน บางบาล อยุธยา")
-    chat.handle(conn, "U-gps2", "line", text=f"ยืนยันขอความช่วยเหลือ #{r.ticket_id}")
-    tools.update_ticket(conn, r.ticket_id, status="acknowledged")
-    chat.handle(conn, "U-gps2", "line", location=(14.4321, 100.4567))
-    assert conn.execute("SELECT status, lat FROM rescue_tickets WHERE id = %s", (r.ticket_id,)).fetchone() == \
-        ("acknowledged", 14.4321)
-    # Closed tickets are left alone: the next share is a normal risk check
-    tools.update_ticket(conn, r.ticket_id, status="resolved")
-    r3 = chat.handle(conn, "U-gps2", "line", location=(14.41, 100.46))
-    assert r3.ticket_id is None and "T.1" in r3.text
-    assert conn.execute("SELECT lat FROM rescue_tickets WHERE id = %s", (r.ticket_id,)).fetchone()[0] == 14.4321
+        assert c.post(path, json={"station_id": 1}, headers=user).status_code == 403
 
 
 def test_web_replies_drop_hotline_copies_and_emoji_line_keeps_them(conn):
@@ -170,7 +150,7 @@ def test_web_replies_drop_hotline_copies_and_emoji_line_keeps_them(conn):
     sos = "ช่วยด้วย ติดอยู่บนหลังคา"
     line, web = chat.handle(conn, "U-line", "line", text=sos), chat.handle(conn, "web:s1", "web", text=sos)
     assert line.text.startswith(chat.RESCUE_HOTLINE)
-    assert chat.RESCUE_HOTLINE not in web.text and web.text.startswith("น้ำมาเตรียมคำขอ") and web.emergency
+    assert chat.RESCUE_HOTLINE not in web.text and web.text.startswith("น้ำมาไม่ได้ส่งเรื่อง") and web.emergency
     # The logged assistant message is what the person saw
     uid = tools.get_or_create_user(conn, "web:s1", None)
     assert conn.execute("SELECT content FROM messages WHERE user_id = %s AND role = 'assistant' "

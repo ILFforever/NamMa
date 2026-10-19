@@ -60,6 +60,35 @@ def station_lines(s: dict) -> list[str]:
     return lines
 
 
+def _rai(km2: float) -> str:
+    rai = km2 * 625
+    return "ไม่ถึง 1" if rai < 1 else f"{rai:,.0f}"
+
+
+def flood_extent_text(extent: dict, approx: bool) -> str:
+    """One line from agent.gistda.check_flood_extent. A place found by its name is only a district centre, so there
+    it gives the flooded area around, not a yes/no for the point."""
+    r = f"{extent['radius_km']:.0f} กม."
+    if extent["nearest_km"] is None:
+        body = f"ไม่พบพื้นที่น้ำท่วมในรัศมี {r}"
+    elif approx:
+        body = f"พื้นที่น้ำท่วมในรัศมี {r} รวมราว {_rai(extent['area_km2_nearby'])} ไร่"
+    elif extent["at_point"]:
+        body = "พบน้ำท่วมที่จุดนี้"
+    else:
+        body = f"ไม่พบน้ำท่วมที่จุดนี้ พื้นที่น้ำท่วมใกล้สุดห่างราว {extent['nearest_km']:.1f} กม."
+    return f"ภาพดาวเทียม GISTDA {extent['days']} วันล่าสุด: {body} (ข้อมูล ณ {_ts(extent['as_of'])})"
+
+
+def recurrence_text(rec: dict) -> str | None:
+    """One line from agent.gistda.get_flood_recurrence: the years the subdistrict flooded, 2011–2023."""
+    years = rec.get("years") or []
+    if not years:
+        return None
+    where = f"ต.{rec['tambon']}" if rec.get("tambon") else "พื้นที่นี้"
+    return f"สถิติ GISTDA 2011–2023: {where} มีน้ำท่วม {len(years)} ปี (ล่าสุดปี {max(years)})"
+
+
 def rule_advice(tier: str, memory: dict) -> list[str]:
     hh, needs, house, assets = (memory.get(k) or {} for k in ("household", "needs", "house", "assets"))
     out = {
@@ -164,9 +193,9 @@ def risk_answer(place_label: str, approx: bool, stations: list[dict], shelters: 
         lines.append("")
         lines += station_lines(worst)
     if extent is not None:
-        lines.append(f"🛰️ ภาพดาวเทียม GISTDA 1 วันล่าสุด: {'พบพื้นที่น้ำท่วมที่จุดนี้' if extent['flooded_last_1day'] else 'ไม่พบน้ำท่วมที่จุดนี้'}")
-    if recurrence is not None and recurrence.get("records"):
-        lines.append(f"🛰️ GISTDA 2011–2023: จุดนี้เคยมีบันทึกน้ำท่วม {recurrence['records']} ครั้ง")
+        lines.append("🛰️ " + flood_extent_text(extent, approx))
+    if recurrence is not None and (rec := recurrence_text(recurrence)):
+        lines.append("🛰️ " + rec)
     lines.append("⚠️ ค่านี้วัดที่สถานีริมแม่น้ำ ไม่ใช่ระดับน้ำที่บ้านโดยตรง ใช้เป็นการประเมินเท่านั้น")
     facts = "\n".join(lines)
     tier = worst["risk_tier"]

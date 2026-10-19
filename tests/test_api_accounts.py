@@ -138,20 +138,22 @@ def test_logout_ends_the_session(seeded):
     assert client.get("/api/me", headers=_auth(t)).status_code == 401
 
 
-def test_delete_my_account_erases_the_person_but_keeps_rescue_tickets(seeded):
+def test_delete_my_account_erases_the_person(seeded):
     client, conn = seeded
     d = _sign_in(client, "line", "demo:user:lek")
     t = d["session_token"]
     client.post("/api/auth/link/google", json={"id_token": "demo:google:lek"}, headers=_auth(t))
     _say(client, t, "บ้านแม่อยู่บางบาล อยุธยา น้ำจะถึงไหม")
-    ticket = _say(client, t, "น้ำเข้าบ้านแล้ว ช่วยด้วย")["ticket_id"]
+    _say(client, t, "น้ำเข้าบ้านแล้ว ช่วยด้วย")
+    uid = conn.execute("SELECT id FROM users WHERE line_user_id = 'demo:user:lek'").fetchone()[0]
 
     r = client.delete("/api/me", headers=_auth(t))
     assert r.status_code == 200 and r.json()["data"] == {"deleted": True}
     assert client.get("/api/me", headers=_auth(t)).status_code == 401
     assert conn.execute("SELECT count(*) FROM users WHERE line_user_id = 'demo:user:lek'").fetchone()[0] == 0
     assert conn.execute("SELECT count(*) FROM user_identities WHERE subject = 'demo:google:lek'").fetchone()[0] == 0
-    assert conn.execute("SELECT user_id FROM rescue_tickets WHERE id = %s", (ticket,)).fetchone() == (None,)
+    for table in ("messages", "user_locations", "user_memory", "sessions"):
+        assert conn.execute(f"SELECT count(*) FROM {table} WHERE user_id = %s", (uid,)).fetchone()[0] == 0, table
     # Signing in again starts a fresh, empty account.
     fresh = _sign_in(client, "line", "demo:user:lek")
     assert _profile(client, fresh["session_token"])["places"] == []
@@ -159,7 +161,7 @@ def test_delete_my_account_erases_the_person_but_keeps_rescue_tickets(seeded):
 
 def test_malformed_demo_tokens_are_rejected(seeded):
     client, _ = seeded
-    for token in ("demo:admin", "demo:user:Bad Name", "demo:google", "demo:google:x:y"):
+    for token in ("demo:admin", "demo:responder", "demo:user:Bad Name", "demo:google", "demo:google:x:y"):
         provider = "google" if "google" in token else "line"
         r = client.post(f"/api/auth/{provider}", json={"id_token": token})
         assert r.status_code == 401, token

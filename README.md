@@ -1,6 +1,6 @@
 # NamMa (น้ำมา)
 
-A Thai flood assistant on LINE. It answers "will the water reach my family's house?" using live ThaiWater data and what it remembers about the household, pushes alerts when the nearest river rises, and turns "help" messages into rescue tickets.
+A Thai flood assistant on LINE. It answers "will the water reach my family's house?" using live ThaiWater data, GISTDA satellite flood maps and what it remembers about the household, pushes alerts when the nearest river rises, and answers "help" messages with the DDPM 1784 hotline and what to tell them.
 
 **Read [CLAUDE.md](CLAUDE.md) first.** It holds the plan, rules, data findings and day plan.
 
@@ -31,9 +31,10 @@ History: `python -m ingest.backfill --coverage` (read-only coverage table), then
 .venv/bin/python -m common.seed                       # station_edges + shelters (after the first ingest)
 SCHEDULER=1 .venv/bin/uvicorn api.main:app --port 8000  # API + LINE webhook + 10-min ingest → risk → forecast → alerts
 ```
-- Web app (built `../namma-web/dist`, or set `WEB_DIST`): http://localhost:8000/#/chat · `#/map` · `#/dashboard`
-- Demo step 3 (tier jump → alert): `POST /api/demo/simulate {"station_id": 2609, "tier": "danger"}`, undo with `POST /api/demo/refresh`. Both need a responder session: `TOKEN=$(curl -s localhost:8000/api/auth/line -H 'content-type: application/json' -d '{"id_token":"demo:responder"}' | jq -r .data.session_token)`, then `-H "Authorization: Bearer $TOKEN"`.
-- Without MaaS / GISTDA / LINE keys everything still works: rule-based Thai, no satellite lines, web chat instead of LINE.
+- Web app (built `../namma-web/dist`, or set `WEB_DIST`): http://localhost:8000/#/chat · `#/map` · `#/flood`
+- Demo step 3 (tier jump → alert): `POST /api/demo/simulate {"station_id": 2609, "tier": "danger"}`, undo with `POST /api/demo/refresh`. Both need `DEMO_MODE=1` and a session: `TOKEN=$(curl -s localhost:8000/api/auth/line -H 'content-type: application/json' -d '{"id_token":"demo:user"}' | jq -r .data.session_token)`, then `-H "Authorization: Bearer $TOKEN"`.
+- GISTDA flood layers: `python -m ingest.gistda_flood` (once; the scheduler runs it every 3 h when `GISTDA_API_KEY` is set).
+- Without MaaS / GISTDA / LINE keys everything still works: rule-based Thai, no satellite lines or flood map data, web chat instead of LINE.
 
 ## Model and backtest
 

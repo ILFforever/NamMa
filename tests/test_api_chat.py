@@ -1,4 +1,4 @@
-"""POST /api/chat (docs/api.md → Chat) against a real Postgres: contract shape, postbacks, triage, rate limit.
+"""POST /api/chat (docs/api.md → Chat) against a real Postgres: contract shape, postbacks, danger, rate limit.
 
 Skipped when no Postgres is reachable (see the api fixture in conftest). Network calls are disabled.
 """
@@ -43,7 +43,7 @@ def test_needs_exactly_one_of_message_postback_location(seeded):
     sid = str(uuid.uuid4())
     bad = [
         {"session_id": sid},
-        {"session_id": sid, "message": "น้ำจะถึงไหม", "postback": "triage:cancel"},
+        {"session_id": sid, "message": "น้ำจะถึงไหม", "postback": "memory:delete_all"},
         {"session_id": sid, "message": "น้ำจะถึงไหม", "location": {"lat": 14.4, "lon": 100.4}},
         {"session_id": sid, "message": "   "},
         {"session_id": sid, "location": {"lat": 95, "lon": 100.4}},
@@ -57,8 +57,9 @@ def test_needs_exactly_one_of_message_postback_location(seeded):
 
 def test_unknown_postback_is_400(seeded):
     client, _ = seeded
-    r = _chat(client, {"session_id": str(uuid.uuid4()), "postback": "hack:me"})
-    assert r.status_code == 400 and r.json()["error"]["code"] == "bad_request"
+    for data in ("hack:me", "triage:confirm", "triage:cancel"):          # no rescue requests to confirm any more
+        r = _chat(client, {"session_id": str(uuid.uuid4()), "postback": data})
+        assert r.status_code == 400 and r.json()["error"]["code"] == "bad_request", data
 
 
 def test_question_about_a_station_returns_reply_sources_and_quick_replies(seeded):
@@ -68,7 +69,7 @@ def test_question_about_a_station_returns_reply_sources_and_quick_replies(seeded
     body = r.json()
     assert "ingested_at" in body["meta"]
     d = body["data"]
-    assert set(d) == {"reply", "sources", "quick_replies", "emergency", "ticket_id"}
+    assert set(d) == {"reply", "sources", "quick_replies", "emergency"}
     # The web draws HotlineNotice under answers with a station source: no text copy, no emoji (LINE keeps both).
     assert "T.1" in d["reply"] and "1784" not in d["reply"] and not chat._EMOJI.search(d["reply"])
     station = next(s for s in d["sources"] if s["type"] == "station")
@@ -81,7 +82,8 @@ def test_question_about_a_station_returns_reply_sources_and_quick_replies(seeded
     assert station["trend_cm_per_hr"] == pytest.approx(1.0, abs=0.01)
     assert station["risk_tier"] in ("normal", "watch") and station["upstream_over"] == []
     assert any(s["type"] == "shelter" and s["name"] == "ศูนย์ทดสอบ" for s in d["sources"])
-    assert d["emergency"] is False and d["ticket_id"] is None
+    assert not any(s["type"] == "gistda" for s in d["sources"])        # no flood layer stored: no satellite line
+    assert d["emergency"] is False
     assert {q["type"] for q in d["quick_replies"]} >= {"location", "message"}
     assert all(len(q["label"]) <= 20 for q in d["quick_replies"])
 
@@ -94,42 +96,15 @@ def test_location_message_returns_nearest_station(seeded):
     assert "T.1" in d["reply"]
 
 
-def test_danger_message_is_emergency_and_creates_a_web_ticket(seeded):
-    client, conn = seeded
-    sid = str(uuid.uuid4())
-    d = _chat(client, {"session_id": sid, "message": "ช่วยด้วย ติดอยู่บนหลังคาที่บางบาล อยุธยา"}).json()["data"]
-    assert d["emergency"] is True and d["ticket_id"] is not None
-    # EmergencyCard above the reply carries 1784/1669, so the text starts with the ticket itself.
-    assert chat.RESCUE_HOTLINE not in d["reply"] and not chat._EMOJI.search(d["reply"])
-    assert d["reply"].startswith(f"น้ำมาเตรียมคำขอความช่วยเหลือ #{d['ticket_id']}")
-    channel, status, place = conn.execute(
-        "SELECT channel, status, place_label FROM rescue_tickets WHERE id = %s", (d["ticket_id"],)).fetchone()
-    assert (channel, status) == ("web", "unconfirmed") and "บางบาล" in place
-    assert any(q.get("data") == "triage:confirm" for q in d["quick_replies"])
-
-
-def test_triage_confirm_postback_confirms_the_ticket(seeded):
-    client, conn = seeded
-    sid = str(uuid.uuid4())
-    tid = _chat(client, {"session_id": sid, "message": "ช่วยด้วย ติดอยู่บนหลังคา"}).json()["data"]["ticket_id"]
-    d = _chat(client, {"session_id": sid, "postback": "triage:confirm"}).json()["data"]
-    assert d["ticket_id"] == tid and d["emergency"] is True
-    assert conn.execute("SELECT channel, status FROM rescue_tickets WHERE id = %s", (tid,)).fetchone() == ("web", "open")
-
-
-def test_triage_cancel_postback_cancels_the_pending_ticket(seeded):
-    client, conn = seeded
-    sid = str(uuid.uuid4())
-    tid = _chat(client, {"session_id": sid, "message": "ช่วยด้วย ติดอยู่บนหลังคา"}).json()["data"]["ticket_id"]
-    d = _chat(client, {"session_id": sid, "postback": "triage:cancel"}).json()["data"]
-    assert d["ticket_id"] is None and d["emergency"] is False
-    assert conn.execute("SELECT status FROM rescue_tickets WHERE id = %s", (tid,)).fetchone()[0] == "cancelled"
-
-
-def test_confirm_with_nothing_pending_is_not_a_ticket(seeded):
+def test_danger_message_is_emergency_with_what_to_tell_1784(seeded):
     client, _ = seeded
-    d = _chat(client, {"session_id": str(uuid.uuid4()), "postback": "triage:confirm"}).json()["data"]
-    assert d["ticket_id"] is None
+    d = _chat(client, {"session_id": str(uuid.uuid4()),
+                       "message": "ช่วยด้วย ติดอยู่บนหลังคาที่บางบาล อยุธยา ยายเดินไม่ได้"}).json()["data"]
+    assert d["emergency"] is True and d["quick_replies"] == []
+    # EmergencyCard above the reply carries 1784/1669, so the text starts with what NamMa does not do.
+    assert chat.RESCUE_HOTLINE not in d["reply"] and not chat._EMOJI.search(d["reply"])
+    assert d["reply"].startswith("น้ำมาไม่ได้ส่งเรื่องให้หน่วยกู้ภัยแทน ต้องโทร 1784 แจ้งเอง")
+    assert "ตำแหน่ง: อ.บางบาล" in d["reply"] and "ยาย (เดินไม่ได้/ติดเตียง)" in d["reply"]
 
 
 def test_consent_postback_writes_consent_and_saves_the_fact(seeded):
@@ -170,7 +145,7 @@ def test_memory_delete_all_postback_forgets(seeded):
 
 def test_signed_in_user_shares_the_line_identity(seeded):
     client, conn = seeded
-    token = login(client, "user")
+    token = login(client)
     sid = str(uuid.uuid4())
     assert _chat(client, {"session_id": sid, "message": "สวัสดี"}, token=token).status_code == 200
     assert conn.execute("SELECT count(*) FROM messages m JOIN users u ON u.id = m.user_id "
@@ -188,7 +163,7 @@ def test_agent_failure_gives_the_fallback_reply(seeded, monkeypatch):
 
     monkeypatch.setattr(chat, "handle", boom)
     d = _chat(client, {"session_id": str(uuid.uuid4()), "message": "ช่วยด้วย น้ำเข้าบ้าน"}).json()["data"]
-    assert d["emergency"] is True and "1784" in d["reply"] and d["ticket_id"] is None
+    assert d["emergency"] is True and "1784" in d["reply"]
 
 
 def test_rate_limit_is_20_per_minute_per_session(seeded):
@@ -206,7 +181,7 @@ def test_shelter_question_lists_shelters_near_the_named_place(seeded):
     d = _chat(client, {"session_id": str(uuid.uuid4()), "message": "ศูนย์พักพิงแถวบางบาล อยุธยา มีที่ไหนบ้าง"}).json()["data"]
     assert "ศูนย์ทดสอบ" in d["reply"] and "บางบาล" in d["reply"] and "1784" in d["reply"]
     assert [s["type"] for s in d["sources"]] == ["shelter"] and d["sources"][0]["name"] == "ศูนย์ทดสอบ"
-    assert d["emergency"] is False and d["ticket_id"] is None
+    assert d["emergency"] is False
 
 
 def test_shelter_question_without_a_place_asks_for_one(seeded):
@@ -227,4 +202,4 @@ def test_shelter_question_uses_the_saved_place(seeded):
 def test_danger_beats_shelter(seeded):
     client, _ = seeded
     d = _chat(client, {"session_id": str(uuid.uuid4()), "message": "ติดอยู่ในบ้าน ไปศูนย์พักพิงไม่ได้ ช่วยด้วย"}).json()["data"]
-    assert d["emergency"] is True and d["ticket_id"] is not None
+    assert d["emergency"] is True and d["sources"] == []

@@ -19,7 +19,7 @@ API_TEST_URL = f"{_BASE}/{_DB}"
 @pytest.fixture()
 def api(monkeypatch):
     """(client, conn): a TestClient for api.main.app and an autocommit connection to seed/inspect the same DB.
-    Log in with `token = login(client, "responder")` and send headers={"Authorization": f"Bearer {token}"}."""
+    Log in with `token = login(client)` and send headers={"Authorization": f"Bearer {token}"}."""
     try:
         admin = psycopg.connect(_BASE + "/postgres", autocommit=True, connect_timeout=3)
     except psycopg.OperationalError:
@@ -42,8 +42,9 @@ def api(monkeypatch):
     conn.close()
 
 
-def login(client, role: str = "responder") -> str:
-    """Demo login (DEMO_MODE=1, the default). Returns the bearer token."""
-    r = client.post("/api/auth/line", json={"id_token": f"demo:{role}"})
+def login(client, name: str | None = None) -> str:
+    """Demo LINE login (DEMO_MODE=1, the default): 'demo:user', or 'demo:user:<name>' for a separate account.
+    Returns the bearer token."""
+    r = client.post("/api/auth/line", json={"id_token": f"demo:user:{name}" if name else "demo:user"})
     assert r.status_code == 200, r.text
     return r.json()["data"]["session_token"]

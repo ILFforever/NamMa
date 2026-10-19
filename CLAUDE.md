@@ -4,7 +4,7 @@ Read this whole file before writing code. It is the shared context for every tea
 
 ## 1. What we're building
 
-A Thai-language **flood assistant** on **Huawei Cloud**, delivered through **LINE OA** (primary) and a **web app** (secondary). The user asks in plain Thai ("น้ำจะถึงบ้านแม่ที่บางระกำไหม"). The agent answers with a decision, using live government water data and what it remembers about the user's household. When the river near a saved location crosses a threshold, it pushes a LINE alert. If the user says they're in danger, the agent creates a structured **rescue ticket** on a responder dashboard.
+A Thai-language **flood assistant** on **Huawei Cloud**, delivered through **LINE OA** (primary) and a **web app** (secondary). The user asks in plain Thai ("น้ำจะถึงบ้านแม่ที่บางระกำไหม"). The agent answers with a decision, using live government water data and what it remembers about the user's household. When the river near a saved location crosses a threshold, it pushes a LINE alert. If the user says they're in danger, the agent gives DDPM 1784 first and tells them what to say when they call (place, who needs help, how many people). **NamMa files no rescue request on anyone's behalf** (decision 2026-10-19: rescue tickets and the responder dashboard were removed). A flood tab on the web shows GISTDA's satellite flood extent.
 
 **Pitch:** Thailand already has the data (ThaiWater, GISTDA, DDPM Cell Broadcast). It's fragmented across 6+ tools, and none of them answers "what should *my family* do *now*". Google Flood Hub knows the river; we know the household.
 
@@ -22,18 +22,19 @@ A Thai-language **flood assistant** on **Huawei Cloud**, delivered through **LIN
 
 ## 3. Architecture
 
-**Decision (2026-10-14): run our code on one ECS VM, not FunctionGraph + APIG.** One always-warm FastAPI app serves the LINE webhook (no cold starts; LINE expects a fast reply), the web API and the responder dashboard, and runs ingest/alert on a schedule. It's fewer Huawei services to learn in 7 days. The code is plain Python with no ECS-specific parts, so we can move to FunctionGraph later if it scores points.
+**Decision (2026-10-14): run our code on one ECS VM, not FunctionGraph + APIG.** One always-warm FastAPI app serves the LINE webhook (no cold starts; LINE expects a fast reply), the web API and the web app, and runs ingest/alert on a schedule. It's fewer Huawei services to learn in 7 days. The code is plain Python with no ECS-specific parts, so we can move to FunctionGraph later if it scores points.
 
 ```
-          LINE OA ──webhook──┐                ┌── Web app (OBS static + CDN)
-                             ▼                ▼      chat · station map · responder dashboard
-                      ECS VM: FastAPI app ◄───┘      login via LINE Login
-                       │   ├─ MaaS LLM (Qwen / DeepSeek / GLM): chat, memory extraction, rescue triage
-                       │   ├─ tools → RDS (stations, readings, users, memory, tickets)
-                       │   └─ tools → GISTDA API (flood extent, recurrence)
+          LINE OA ──webhook──┐                ┌── Web app (served by the same app)
+                             ▼                ▼      chat · station map · satellite flood map
+                      ECS VM: FastAPI app ◄───┘      login via LINE Login or Google
+                       │   ├─ MaaS LLM (Qwen / DeepSeek / GLM): chat, memory extraction
+                       │   ├─ tools → RDS (stations, readings, users, memory, flood cells)
+                       │   └─ tools → GISTDA API (flood recurrence at a point)
                        │
                        ├─ scheduler, every 10 min: ingest ThaiWater → RDS (+ raw JSON to OBS)
-                       └─ alert job after each ingest → compute risk → LINE push (deduped, with cooldown)
+                       ├─ alert job after each ingest → compute risk → LINE push (deduped, with cooldown)
+                       └─ every 3 h: GISTDA 3-day + 7-day flood layers → RDS (only when they changed)
    Forecast model: LightGBM trained on a laptop (CPU is enough), scores written to RDS.
                    ModelArts only if we want it on the slide.
 ```
@@ -92,12 +93,23 @@ Latest: `GET .../public/rain_24h` (~4.7 MB, ~4,600 stations). `data[]` with `rai
 History: `GET .../public/rain_24h_graph?station_type=rainfall_24h&station_id={rain_station_id}` returns hourly `{rainfall_datetime, rainfall_value}` but **ignores start/end dates and always returns the last ~40 h**. There is no rainfall history. Our own logging is the history. Start ingesting rain on day 0.
 
 ### 4.4 GISTDA (needs a free API key from https://api-gateway.gistda.or.th)
-- Flood extent (satellite, last 1 day) at a point:
-  `https://api-gateway.gistda.or.th/api/2.0/resources/gi-service/v1.0/disasters/flood-extent-1day?lat={lat}&lon={lon}&api_key={KEY}`
+The key goes in the **`API-Key` header**, never the URL (responses' `links` echo the request URL). Without a key the
+gateway answers 407; with a bad one 401 `INVALID_API_KEY` (checked 2026-10-19, any path).
+- ~~`gi-service/v1.0/disasters/flood-extent-1day?lat&lon`~~ (point query): **dead**. Replaced by the layers below.
+- **Flood extent layers** (satellite), OGC API Features, one GeoJSON feature per flooded **H3 res-9 cell** (~0.1 km²):
+  `GET https://api-gateway.gistda.or.th/api/2.0/resources/features/flood/{1day|3days|7days|30days}?limit=&offset=`
+  (`bbox` and `pv_idn` filter; `skipGeometry`/`properties` are ignored, so geometry always comes back, ~3 KB a cell).
+  Reported sizes: 3 days ~80k cells, 7 days ~110k (a few hundred MB). 1-day/3-day are sometimes empty.
+  Client + import: `ingest/gistda_flood.py` (3-day + 7-day, every 3 h in the scheduler, skips an unchanged layer).
+  Map tiles also exist (`maps/flood/{period}/tms/{z}/{x}/{y}`, key needed, so they'd need a proxy): not used.
 - Flood recurrence 2011–2023 at a point ("has this spot flooded before, how often"):
-  `https://api-gateway.gistda.or.th/api/2.0/resources/gi-service/v1.0/disasters/flood-recurrence?lat={lat}&lon={lon}&api_key={KEY}`
+  `https://api-gateway.gistda.or.th/api/2.0/resources/gi-service/v1.0/disasters/flood-recurrence?lat={lat}&lon={lon}`
+  Reported live (Oct 2026): `[{subdistrict_name, district_name, province_name, total, detail: [{year, freq}]}]` or
+  `{"result": "not found"}`. Client: `agent/gistda.py`.
 
-Response shapes are not yet inspected. Log one real response and write the parser against it.
+**Not yet checked against a response of ours** (no key yet): the field names come from other projects' write-ups.
+The parsers look for each field under the reported names, and the first page of each new layer and every recurrence
+response are archived (key removed) under `var/raw/gistda`. Check them once a key is in `.env`.
 
 ### 4.5 No API (handle manually)
 - ~~Shelters: hand-curate a CSV~~ → now from DDPM, see §4.7.
@@ -144,10 +156,12 @@ messages(id PK, user_id, channel, role, content, ts)            -- keep last N p
 conversation_summary(user_id PK, summary, updated_at)
 
 alerts_sent(id PK, user_id, location_id, station_id, risk_tier, ts)  -- dedupe + cooldown
-rescue_tickets(id PK, user_id NULL, raw_text, lat, lon, people_count, vulnerable JSONB,
-               needs JSONB, urgency, status, created_at, updated_at)
 shelters(id PK, name, lat, lon, capacity, accepts_patients, accepts_pets, phone)
+flood_cells(period, h3, h3_r5..h3_r8, lat, lon, area_km2, pv/ap/tb_code, province, amphoe, tambon,
+            observed_at, props JSONB, PRIMARY KEY(period, h3))       -- GISTDA layer, replaced per fetch
+flood_fetches(id PK, period, fetched_at, cells, area_km2, observed_from, observed_to, fingerprint, by_province)
 ```
+(`rescue_tickets`, `ticket_events` and `users.role` were dropped in migration 006.)
 
 `diff_wl_bank` is stored **signed**: positive = above bank (overflow), negative = below.
 
@@ -158,14 +172,13 @@ shelters(id PK, name, lat, lon, capacity, accepts_patients, accepts_pets, phone)
 Tools (each is a plain Python function with typed input and output; unit-test them all):
 - `get_nearest_stations(lat, lon, k=3)` → level, diff to bank, situation level, 3h/12h trend, upstream status
 - `get_forecast(station_id)` → from `station_risk` (rules, or model output if trained)
-- `check_flood_extent(lat, lon)` / `get_flood_recurrence(lat, lon)` → GISTDA
+- `check_flood_extent(conn, lat, lon)` → the stored GISTDA layer (§4.4); `get_flood_recurrence(lat, lon)` → GISTDA
 - `find_shelters(lat, lon, needs)` → filter by accepts_patients / accepts_pets
 - `get_user_profile(user_id)` / `save_location(...)`
-- `create_rescue_ticket(...)`
 
 **Prompt assembly per turn:** system prompt (rules from §2 + tone: calm, direct, Thai) → user memory block (only consented fields) → conversation summary + last ~10 messages → tool results → user message.
 
-**Rescue triage:** if the user signals danger ("น้ำเข้าบ้านแล้ว", "ติดอยู่", "ช่วยด้วย"), immediately give the DDPM 1784 contact. Then extract `{location, people_count, vulnerable, needs, urgency}` with the LLM (zero-shot JSON), confirm with the user via quick replies, and create the ticket. Pre-fill from memory (e.g. known bedridden family member → urgency up).
+**Danger:** if the user signals danger ("น้ำเข้าบ้านแล้ว", "ติดอยู่", "ช่วยด้วย"), the reply leads with the DDPM 1784 contact, says NamMa does not send for help on their behalf, lists what to tell 1784 (the place in words or GPS coordinates, who needs help, how many people, from the message and memory) and what to do while waiting. No ticket, no confirm step (`agent/triage.py`).
 
 ## 7. User memory
 
@@ -209,7 +222,8 @@ Rules first; the ML forecast is an add-on.
 /common     config (.env), DB connection, migration runner
 /ingest     ThaiWater client, ingest job, history backfill
 /agent      tools, risk rules, chat flow, memory extraction, triage, alerts, jobs (scheduler)
-/api        FastAPI app: LINE webhook, web API, responder API, demo endpoints, serves the built web app
+/api        FastAPI app: LINE webhook, web API (stations, shelters, flood, chat, profile, auth), demo endpoints,
+            serves the built web app
 /line       LINE webhook adapter + push sender (Messaging API)
 /model      travel times, LightGBM forecast (train/score), rule backtest; artifacts/ not in git
 /infra      SQL migrations, Huawei console checklist, deploy scripts
@@ -225,7 +239,7 @@ Python 3.12. Local dev: `docker compose up -d` (Postgres) → `python -m common.
 - **Stack:** Vite + React 19 + TS + Tailwind 4, react-router (`HashRouter`), TanStack Query, react-leaflet, Recharts.
 - **Run:** `cd ../namma-web && npm ci && npm run dev`, then open http://localhost:5173. Checks: `npm run typecheck && npm test && npm run build`.
 - **API contract:** `docs/api.md` (here) + `src/api/types.ts` (namma-web).
-- **Mock mode (default, `VITE_API_MODE=mock`):** an in-app mock backend (`src/api/mock/`) serves real ThaiWater fixtures. Refresh them with `python -m ingest.export_web_fixtures`. Mock state lives in localStorage, so a chat tab and a dashboard tab share it (rehearses demo step 4). `?demo=1` opens a demo panel: role switch, simulate a tier, inject a ticket, reset.
+- **Mock mode (default, `VITE_API_MODE=mock`):** an in-app mock backend (`src/api/mock/`) serves real ThaiWater fixtures. Refresh them with `python -m ingest.export_web_fixtures`. The flood tab's cells in mock mode are a **labelled sample**, not GISTDA data. Mock state lives in localStorage, so tabs share it. `?demo=1` opens a demo panel: demo login, simulate a tier, reset.
 - **Real backend:** `VITE_API_MODE=http` proxies `/api` to `:8000`. Mock code is excluded from that build.
 - **Why `HashRouter`, no service workers:** OBS can't rewrite deep links, and the LIFF browser has no service workers.
 - **Thai text** lives in `src/copy.ts` (namma-web).
@@ -269,19 +283,20 @@ References (verify links before relying on them):
 - [x] `waterlevel_graph` datum: same as `waterlevel_msl` (§4.2)
 - [x] `waterlevel_graph` history depth: ≤366 days per call; corridor backfilled 2018–2026 (RID from ~2020, HII from 2018–19).
 - [x] Rainfall history endpoint: none (§4.3). Log our own from day 0.
-- [ ] GISTDA response shapes (flood-extent, recurrence)
+- [ ] GISTDA response shapes: flood layers and recurrence. Endpoints and auth known (§4.4); field names still from other projects' reports
 - [x] ~~FunctionGraph runtime / cold start~~: moot, we run on ECS (§3)
 - [ ] LINE OA plan push-message quota (Thailand)
 - [ ] Does the $200 credit cover all services or only MaaS?
 - [x] Demo script §15 Bang Rakam: works. Answers use the nearest of all ~800 live stations (Y.64/Y.16 on the Yom), and `get_nearest_stations` fetches 2 days of history on demand so the trend is real. Only upstream edges and the ML forecast are corridor-only.
 - [ ] **Web hosting.** In AP-Bangkok, OBS's default domain adds `Content-Disposition: attachment`, so pages download instead of rendering. We need a custom domain + HTTPS (LIFF and geolocation need HTTPS too). Recommendation: serve namma-web's `dist` from the ECS FastAPI app on the same origin as `/api` (one cert, no CORS); keep OBS+CDN as a later upgrade.
 - [ ] **Web login.** Recommendation: LIFF on a LINE Login channel under the **same provider** as the OA channel, so the userId matches. The backend verifies the ID token. `initSession()` in namma-web `src/auth/session.ts` is the hook point. Publish the channel or add judges as Testers before the demo.
-- [ ] **Responder access + audit.** `users.role` or an allowlist, plus a `ticket_events` table. Tickets hold health data. The rest of the schema gaps are listed in `docs/api.md`.
+- [x] ~~Responder access + audit~~: moot, rescue tickets and the responder role were removed (2026-10-19).
 
 ## 15. Demo script (build toward this)
 
 1. LINE: "บ้านแม่อยู่บางระกำ พิษณุโลก น้ำจะถึงไหม" → sourced answer with station, gap to bank, trend, recurrence, and what to do.
 2. Agent asks about the household; user says grandma is bedridden → consent prompt → saved.
 3. Simulated tier jump at the nearest station → personalized push: earlier evacuation, a shelter that accepts patients, 1784.
-4. "น้ำเข้าบ้านแล้ว ยายเดินไม่ได้" → triage → ticket appears on the responder dashboard, pre-filled and marked urgent.
-5. Backtest slide: our warning lead time on the Sept 2026 event.
+4. "น้ำเข้าบ้านแล้ว ยายเดินไม่ได้" → 1784 first, and what to tell them: บ้านแม่'s district, ยาย who can't walk.
+5. Web flood tab: GISTDA's satellite flood cells on a satellite map, flooded area per province and district.
+6. Backtest slide: our warning lead time on the Sept 2026 event.
