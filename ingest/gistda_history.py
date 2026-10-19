@@ -15,7 +15,9 @@ GET https://api-gateway.gistda.or.th/api/2.0/resources/features/flood-freq?pv_id
 Run it on its own, off-hours, never in the API process (the VM has 1.7 GB of memory): pages are read one at a time.
 Every page is kept gzipped under var/raw/gistda/flood-freq/pv<code>/, which is also how a stopped run resumes: a
 page already on disk is not downloaded again, and a rerun with every page on disk rebuilds the tables with no
-GISTDA call. Those files are the raw copy that goes to OBS once the bucket exists.
+GISTDA call. With OBS_BUCKET set, the pages also go to obs://<bucket>/gistda/flood-freq/pv<code>/ (only those not
+there yet, or changed). OBS credentials come from the VM's IAM agency through the ECS metadata service, so there
+is no AK/SK on the VM (CLAUDE.md §11).
 Property names other than the year flags come from the 3/7-day layers' parser (ingest/gistda_flood.py), so a
 province whose shapes carry no sub-district code still gets its cells; the summary counts such shapes.
 """
@@ -44,6 +46,9 @@ MAX_SHAPES = 1_500_000                  # far above any province measured: past 
 RES = 9                                 # the same grid as the 3/7-day layers
 FIRST_YEAR = 2011                       # bit 0 of a year mask
 RAI_PER_KM2 = 625
+
+OBS_PREFIX = "gistda/flood-freq"
+OBS_DEFAULT_ENDPOINT = "https://obs.ap-southeast-2.myhuaweicloud.com"    # AP-Bangkok
 
 YEAR_KEY = re.compile(r"^(?:y|yr|year|f)_?(\d{4})$")
 FREQ_KEYS = ("freq", "frequency", "flood_freq", "freq_flood", "total", "count", "times")
@@ -276,6 +281,47 @@ def read_pages(d: Path):
             yield json.load(f)
 
 
+# --- OBS ---------------------------------------------------------------------------------------------
+
+def obs_client():
+    """(ObsClient, bucket) with the VM agency's temporary credentials, or (None, None) when OBS_BUCKET is not set."""
+    bucket = os.environ.get("OBS_BUCKET")
+    if not bucket:
+        return None, None
+    import certifi
+    from obs import ObsClient            # esdk-obs-python; only needed where OBS_BUCKET is set
+    # The SDK skips certificate checks by default, and ssl_verify=True alone loads no CA, so give it a bundle.
+    return ObsClient(server=os.environ.get("OBS_ENDPOINT") or OBS_DEFAULT_ENDPOINT, ssl_verify=certifi.where(),
+                     security_provider_policy="ECS"), bucket
+
+
+def _ok(resp, what: str):
+    if resp.status >= 300:
+        raise GistdaError(f"OBS {what}: {resp.status} {resp.errorCode} {resp.errorMessage}")
+    return resp.body
+
+
+def upload(pv: str, d: Path, client, bucket: str) -> int:
+    """The province's pages that the bucket lacks, or holds at another size (after --refetch). Returns how many."""
+    prefix = f"{OBS_PREFIX}/pv{pv}/"
+    have: dict[str, int] = {}
+    marker = None
+    while True:
+        body = _ok(client.listObjects(bucket, prefix=prefix, marker=marker, max_keys=1000), "list " + prefix)
+        contents = body.contents or []
+        have.update((c.key, c.size) for c in contents)
+        if not body.is_truncated or not contents:
+            break
+        marker = body.next_marker or contents[-1].key
+    sent = 0
+    for p in sorted(d.glob("*.json.gz")):
+        key = prefix + p.name
+        if have.get(key) != p.stat().st_size:
+            _ok(client.putFile(bucket, key, str(p)), "put " + key)
+            sent += 1
+    return sent
+
+
 # --- storing -----------------------------------------------------------------------------------------
 
 CELL_COLS = ("pv_code", "h3", "lat", "lon", "years", "freq", "ap_code", "tb_code")
@@ -308,9 +354,11 @@ def store(conn, pv: str, cells: list[dict], tambons: list[dict], run: dict) -> N
 
 
 def run_province(conn, pv: str, key: str | None = None, client: httpx.Client | None = None,
-                 refetch: bool = False) -> dict:
-    """Download (or resume) one province, build its cells and sub-districts, store them. Returns the run summary.
-    Any failure raises and leaves the stored rows as they were."""
+                 refetch: bool = False, obs=None) -> dict:
+    """Download (or resume) one province, build its cells and sub-districts, store them, then copy its pages to OBS
+    when `obs` is an (ObsClient, bucket) pair. Returns the run summary. A download or build failure raises and
+    leaves the stored rows as they were; an upload failure raises after the rows are stored, and a rerun sends
+    only what is missing."""
     d = RAW_DIR / "gistda" / "flood-freq" / f"pv{pv}"
     if refetch and d.exists():
         shutil.rmtree(d)
@@ -321,6 +369,7 @@ def run_province(conn, pv: str, key: str | None = None, client: httpx.Client | N
     run = {**got, **n, "cells": len(cells), "tambons": len(tambons)}
     store(conn, pv, cells, tambons, run)
     conn.commit()
+    run["uploaded"] = upload(pv, d, *obs) if obs and obs[0] is not None else None
     return run
 
 
@@ -329,7 +378,8 @@ def describe(pv: str, r: dict) -> str:
     return (f"gistda history pv{pv}: {r['shapes']:,} shapes of {r['number_matched'] or '?'} in {r['pages']} pages, "
             f"{r['raw_bytes'] / 1e6:.1f} MB gzipped ({dl}); {r['cells']:,} cells, {r['tambons']} sub-districts. "
             f"Shapes with no year: {r['no_years']}, no sub-district code: {r['no_tb_code']}, "
-            f"GISTDA freq ≠ our count: {r['freq_mismatch']}")
+            f"GISTDA freq ≠ our count: {r['freq_mismatch']}. "
+            + ("OBS: not set" if r.get("uploaded") is None else f"OBS: {r['uploaded']} pages sent"))
 
 
 def show(conn, name: str) -> list[str]:
@@ -347,10 +397,11 @@ def main() -> None:
     p.add_argument("--show", help="a sub-district name to print the flooded years of, e.g. บางบาล")
     args = p.parse_args()
     key = os.environ.get("GISTDA_API_KEY")
+    obs = obs_client()
     with connect() as conn:
         for pv in args.province:
             try:
-                print(describe(pv, run_province(conn, pv, key, refetch=args.refetch)), flush=True)
+                print(describe(pv, run_province(conn, pv, key, refetch=args.refetch, obs=obs)), flush=True)
             except Exception as e:
                 conn.rollback()
                 print(f"gistda history pv{pv} failed: {gf._scrub(repr(e), key)}", flush=True)

@@ -3,6 +3,8 @@ sub-districts. Shapes are built to the plan's description of features/flood-freq
 pv/ap/tb names and codes); paging goes through httpx.MockTransport, so nothing calls GISTDA. DB tests skip
 without Postgres."""
 import gzip
+from pathlib import Path
+from types import SimpleNamespace
 
 import h3
 import httpx
@@ -131,6 +133,53 @@ def test_download_refuses_an_ignored_filter_or_a_short_province(fast, tmp_path):
     client, _ = _gistda({0: fast[0], 3: fast[0]}, total=9)
     with pytest.raises(gh.GistdaError, match="offset looks ignored"):
         gh.download("14", tmp_path / "c", KEY, client)
+
+
+# --- OBS ---------------------------------------------------------------------------------------------
+
+class FakeObs:
+    """listObjects / putFile as esdk-obs-python answers them (resp.status, resp.body), over a dict."""
+
+    def __init__(self, objects=None, fail_put=False):
+        self.objects, self.fail_put, self.puts = dict(objects or {}), fail_put, []
+
+    def listObjects(self, bucket, prefix=None, marker=None, max_keys=None):
+        keys = sorted(k for k in self.objects if k.startswith(prefix) and (marker is None or k > marker))
+        page = keys[:2]                                       # tiny pages, to exercise the marker
+        contents = [SimpleNamespace(key=k, size=self.objects[k]) for k in page]
+        return SimpleNamespace(status=200, body=SimpleNamespace(contents=contents, is_truncated=len(keys) > 2,
+                                                                next_marker=None))
+
+    def putFile(self, bucket, key, path):
+        if self.fail_put:
+            return SimpleNamespace(status=403, errorCode="AccessDenied", errorMessage="no agency", body=None)
+        self.puts.append(key)
+        self.objects[key] = Path(path).stat().st_size
+        return SimpleNamespace(status=200, body=None)
+
+
+def test_upload_sends_only_missing_or_changed_pages(fast, tmp_path):
+    d = tmp_path / "pv14"
+    gh.download("14", d, KEY, _gistda(fast, total=7)[0])
+    obs = FakeObs()
+    assert gh.upload("14", d, obs, "namma") == 3
+    assert obs.puts == [f"gistda/flood-freq/pv14/{o:07d}.json.gz" for o in (0, 3, 6)]
+    assert gh.upload("14", d, obs, "namma") == 0                  # all there, across two list pages
+    obs.objects["gistda/flood-freq/pv14/0000003.json.gz"] = 1     # a refetched page differs
+    assert gh.upload("14", d, obs, "namma") == 1
+    with pytest.raises(gh.GistdaError, match="AccessDenied"):
+        gh.upload("14", d, FakeObs(fail_put=True), "namma")
+
+
+def test_obs_client_uses_the_vm_agency(monkeypatch):
+    monkeypatch.delenv("OBS_BUCKET", raising=False)
+    assert gh.obs_client() == (None, None)
+    pytest.importorskip("obs")
+    monkeypatch.setenv("OBS_BUCKET", "namma")
+    monkeypatch.delenv("OBS_ENDPOINT", raising=False)
+    client, bucket = gh.obs_client()
+    assert bucket == "namma" and client.security_provider_policy == "ECS" and client.ssl_verify.endswith(".pem")
+    assert client.server == "obs.ap-southeast-2.myhuaweicloud.com"
 
 
 # --- storing (Postgres) ------------------------------------------------------------------------------
