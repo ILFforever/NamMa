@@ -5,9 +5,10 @@ classify intent in code → call tools → template facts (+ optional LLM advice
 """
 import re
 import time
+from contextvars import ContextVar
 from dataclasses import dataclass, field
 
-from agent import answer, memory, tools, triage
+from agent import answer, memory, tools, triage, understand
 from agent.text import clean
 from agent.geo import PROVINCE_ALIASES, find_place, place_candidates, place_text
 from agent.risk import rank
@@ -177,6 +178,8 @@ ADD_PLACE_RE = re.compile(_EDIT_POLITE.format(r"(?:เพิ่ม|บันท�
 ADD_NAMED_RE = re.compile(r"(?:ช่วย|ขอ)?\s*(?:เพิ่ม|บันทึก)\s*((?:บ้าน|ร้าน|ที่ทำงาน|ออฟฟิศ|โรงเรียน|คอนโด|หอพัก|หอ)\S{0,10})")
 AWAIT_TTL = 15 * 60                      # a half-finished "add a place" is forgotten after 15 minutes
 HOME = "บ้าน"
+# What the LLM read in this turn's message (agent/understand.py), or None: the rules decide alone.
+_U: ContextVar[understand.Understanding | None] = ContextVar("understanding", default=None)
 
 
 def handle(conn, external_id: str | None, channel: str, text: str | None = None,
@@ -283,11 +286,14 @@ def _route(conn, uid: int, text: str, location) -> Reply:
 def _route_text(conn, uid: int, t: str) -> Reply:
     if t == HOME:
         return _home(conn, uid)
-    if triage.is_danger(t):
+    if triage.is_danger(t):                      # the rules alone can always raise danger, whatever the LLM reads
         return _emergency(conn, uid, t)
-    if ALERT_RE.search(t):
-        return Reply(ALERT_TEXT, [LOCATION_Q, PROFILE_Q])
-    reply = _route_rest(conn, uid, t)
+    u = _understand(conn, uid, t)
+    token = _U.set(u)
+    try:
+        reply = _route_understood(conn, uid, t, u)
+    finally:
+        _U.reset(token)
     if not _recent(conn, uid, "_sos", SOS_TTL) or reply.emergency:
         return reply
     unclear = (not reply.sources and reply.text.startswith((NOT_UNDERSTOOD[:20], "ยังหาตำแหน่ง", "ยังไม่ได้บันทึก",
@@ -299,6 +305,74 @@ def _route_text(conn, uid: int, t: str) -> Reply:
         reply.text = RESCUE_HOTLINE + "\n\n" + reply.text
         reply.emergency = True
     return reply
+
+
+def _understand(conn, uid: int, t: str) -> understand.Understanding | None:
+    """The LLM's reading of the whole message, with the rules' guess as a hint; None without an LLM."""
+    if not understand.llm.available() or t in (PROFILE_Q.text, FORGET_ALL_TEXT) or t.startswith("ลบ"):
+        return None                                        # buttons and delete commands mean exactly what they say
+    prof = tools.get_user_profile(conn, uid)
+    recent = tools.recent_messages(conn, uid, 7)[:-1]      # the last one is this message, already logged
+    return understand.read(t, _rule_guess(t), [l["label"] for l in prof["locations"]], recent)
+
+
+def _rule_guess(t: str) -> str:
+    asks = _asks_risk(t)
+    intent = ("alerts" if ALERT_RE.search(t) else "profile" if (PROFILE_RE.search(t) or FORGET_ASK_RE.search(t))
+              and not asks else "evacuate" if EVAC_RE.search(t) else "shelter" if SHELTER_RE.search(t)
+              else "hotline" if HOTLINE_RE.search(t) and not asks else "risk" if asks
+              else "greeting" if GREETING_RE.match(t) else "thanks" if THANKS_RE.match(t) else "unclear")
+    place = find_place(t)
+    where = "none found" if not place else place.label + ("" if place.amphoe else " (province only)")
+    return f"intent={intent}, place={where}"
+
+
+def _route_understood(conn, uid: int, t: str, u: understand.Understanding | None) -> Reply:
+    """The LLM's intent picks the handler; without it, the rules do (_route_rest). Deleting data stays on the
+    explicit "ลบ …" commands either way."""
+    if u is None:
+        if ALERT_RE.search(t):
+            return Reply(ALERT_TEXT, [LOCATION_Q, PROFILE_Q])
+        return _route_rest(conn, uid, t)
+    command = re.sub(r"^(ช่วย|ขอ|อยาก|รบกวน|please)\s*", "", t, flags=re.I)
+    if command.startswith("ลบ") and u.intent != "risk":
+        return _forget(conn, uid, command)
+    i = u.intent
+    if i == "danger":
+        return _emergency(conn, uid, t)
+    if i == "alerts":
+        return Reply(ALERT_TEXT, [LOCATION_Q, PROFILE_Q])
+    if i == "profile":
+        return _profile(conn, uid)
+    if i == "evacuate":
+        return _evac(conn, uid, t)
+    if i == "shelter":
+        return _shelters(conn, uid, t)
+    if i == "hotline":
+        return Reply(HOTLINES, [LOCATION_Q])
+    if i == "greeting":
+        return Reply(HELP, [LOCATION_Q, EXAMPLE_Q])
+    if i == "thanks":
+        return Reply(THANKS, [LOCATION_Q])
+    if i == "set_home":
+        return _start_edit(conn, uid, SET_HOME)
+    if i == "add_place":
+        if u.label and _place_name_ok(u.label):
+            return _got_place_name(conn, uid, u.label)
+        return _start_edit(conn, uid, ADD_PLACE)
+    if i == "other" and (text := understand.safe_reply(u.reply)):
+        return Reply(text + "\n\nถ้าอยู่ในอันตรายตอนนี้ โทร 1784 (ปภ.) ได้ทันที", [LOCATION_Q, EXAMPLE_Q])
+    return _talk(conn, uid, t, force=(i == "risk"))
+
+
+def _find_place(t: str):
+    """The place the message names: the rules' match or the LLM's, whichever is more specific (rules on a tie)."""
+    rule = find_place(t)
+    u = _U.get()
+    if not (u and u.place):
+        return rule
+    depth = lambda p: (bool(p.amphoe) + bool(p.tambon)) if p else -1   # noqa: E731
+    return u.place if depth(u.place) > depth(rule) else rule
 
 
 def _route_rest(conn, uid: int, t: str) -> Reply:
@@ -362,7 +436,8 @@ def _remember(conn, uid: int, text: str) -> tuple[dict, bool]:
     """Extract stated facts; save the non-sensitive ones, park sensitive ones. Returns (facts, needs_consent)."""
     if memory.negates_sensitive(text):
         tools.set_pending(conn, uid, {})     # "ยายไม่ได้ติดเตียง": a correction drops what waited for consent
-    facts = memory.extract(text)
+    u = _U.get()
+    facts = u.facts if u else memory.extract(text)
     if not facts:
         return {}, False
     plain, sensitive = memory.split_sensitive(facts)
@@ -484,8 +559,9 @@ def _talk(conn, uid: int, t: str, force: bool = False) -> Reply:
         t = re.split(r"\s*(?:แล้วก็|และ|แล้ว|ส่วน)\s*(?=\S{0,14}อยู่)", t)[0]
     prof = tools.get_user_profile(conn, uid)
     saved_labels = tuple(l["label"] for l in prof["locations"])
-    place = find_place(t)
-    label = memory.location_label(t)
+    u = _U.get()
+    place = _find_place(t)
+    label = memory.location_label(t) or (u.label if u and u.place and u.place.amphoe else None)
     asks = force or _asks_risk(t) or bool(place and SAFE_WORDS.search(t))
     hill = bool(HILL_RE.search(_PERSON.sub(" ", t).replace(" ", "")))
     assure = bool(ASSURE_RE.search(t))
@@ -494,7 +570,8 @@ def _talk(conn, uid: int, t: str, force: bool = False) -> Reply:
     if place and not place.amphoe:
         return _ask_place(label, [], hill, assure, need_consent, province=place.province)
     cands = [] if place or not (asks or label) else place_candidates(t, skip=saved_labels)
-    named = _saved_named(t, prof["locations"])
+    named = _saved_named(t, prof["locations"]) or next(
+        (l for l in prof["locations"] if u and l["label"] == u.saved), None)
     tight = t.replace(" ", "")
     hits = [l for l in prof["locations"] if l["label"] in tight]
     hits = [l for l in hits if not any(l is not o and l["label"] in o["label"] for o in hits)]
@@ -636,7 +713,7 @@ def _shelters(conn, uid: int, t: str) -> Reply:
     """Shelters near a named place, else near a saved place (the one named in the text, else the first)."""
     _, need_consent = _remember(conn, uid, t)
     prof = tools.get_user_profile(conn, uid)
-    place = find_place(t)
+    place = _find_place(t)
     if place and not place.amphoe:
         return Reply(f"จ.{place.province} กว้างเกินไปค่ะ บอกอำเภอหรือตำบล หรือกดแชร์ตำแหน่ง "
                      "แล้วจะหาศูนย์พักพิงที่ใกล้ที่สุดให้\nถ้าต้องการความช่วยเหลือด่วน โทร 1784 ได้ทันที", [LOCATION_Q])
@@ -753,7 +830,7 @@ def _approx(loc: dict) -> bool:
 def _place_words(t: str, locations: list[dict]) -> str | None:
     """Where the person is, in words 1784 can use: a place named in the message, else the first saved place
     (its district, or its coordinates when it was a GPS share)."""
-    if place := find_place(t):
+    if place := _find_place(t):
         return place.label + " (บอกบ้านเลขที่ หมู่บ้าน หรือจุดสังเกตเพิ่มด้วย)"
     if not locations:
         return None

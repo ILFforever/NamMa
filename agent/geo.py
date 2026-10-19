@@ -131,6 +131,8 @@ def find_place(text: str) -> Place | None:
     provinces = {v for a, v in PROVINCE_ALIASES.items() if _names(a, text, spaced)}
     places = _gazetteer()
     provinces |= {p.province for p in places if not p.amphoe and _names(p.province, text, spaced)}
+    if len(provinces) == 1 and re.search(r"(อำเภอ|อ\.)เมือง(?!" + re.escape(next(iter(provinces))) + ")", text):
+        text += "อ.เมือง" + next(iter(provinces))     # "เชียงราย อำเภอเมือง" is อ.เมืองเชียงราย
     named = {a for a, v in PROVINCE_ALIASES.items() if v in provinces} | provinces
     spans = tuple((m.start(), m.end()) for n in named for m in re.finditer(re.escape(n), text))
 
@@ -176,3 +178,26 @@ def place_candidates(text: str, k: int = 3, skip: tuple[str, ...] = ()) -> list[
             and _names(p.tambon, text, spaced, need_cue=True)]
     hits = [p for p in hits if sum(q.tambon == p.tambon for q in hits) <= 2]
     return sorted(hits, key=lambda p: -len(p.tambon))[:k]
+
+
+_PREFIX = re.compile(r"^(จังหวัด|จ\.|อำเภอ|อ\.|เขต|ตำบล|ต\.|แขวง)\s*")
+
+
+def resolve(province: str | None, amphoe: str | None = None, tambon: str | None = None) -> Place | None:
+    """The gazetteer place for names someone (the LLM) already split into province / district / subdistrict, in Thai.
+    Coordinates always come from the gazetteer, never from the caller. The most specific level that exists wins:
+    a district or subdistrict that is not in that province is ignored, not guessed."""
+    def clean(name):
+        return _PREFIX.sub("", (name or "").strip()).replace(" ", "")
+    prov, amp, tam = clean(province), clean(amphoe), clean(tambon)
+    prov = PROVINCE_ALIASES.get(prov.lower(), prov)
+    places = [p for p in _gazetteer() if p.province == prov]
+    if not places:
+        return None
+    if amp in ("เมือง", "อำเภอเมือง"):
+        amp = "เมือง" + prov
+    in_amp = [p for p in places if amp and p.amphoe == amp]
+    for p in in_amp or places:
+        if tam and p.tambon == tam:
+            return p
+    return next((p for p in in_amp if not p.tambon), None) or next((p for p in places if not p.amphoe), None)
