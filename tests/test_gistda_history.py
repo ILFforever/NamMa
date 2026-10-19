@@ -223,3 +223,25 @@ def test_chat_recurrence_reads_our_copy(api, fast, monkeypatch):
     assert beside["at_point"] == [] and beside["years"] == rec["years"]
     assert answer.recurrence_text(beside).endswith("ไม่พบน้ำท่วมที่จุดนี้เอง")
     assert gistda.get_flood_recurrence(conn, 15.5, 100.46) is None                  # nothing flooded within 2 km
+
+
+def test_history_api_for_the_map(api, fast):
+    client, conn = api
+    empty = client.get("/api/flood/history").json()["data"]
+    assert empty["areas"] == [] and empty["provinces"] == [] and empty["years"] == []
+    small = [_shape([2011, 2017], half=0.0002), _shape([2011], half=0.0002, at=(14.4105, 100.4605)),
+             _shape([2024], at=(14.6, 100.5), tb="140601", tambon="บ้านแพน")]
+    for f, rai in zip(small, (4.0, 2.5, 10.0)):
+        f["properties"]["area_rai"] = rai
+    gh.run_province(conn, "14", KEY, _gistda({0: small}, total=3)[0])
+
+    d = client.get("/api/flood/history").json()["data"]
+    assert d["provinces"] == ["14"] and d["years"] == list(range(2011, 2025))
+    [p] = d["areas"]
+    assert (p["code"], p["province"], p["years"]) == ("14", "พระนครศรีอยุธยา", [2011, 2017, 2024])
+    assert p["rai_by_year"] == {"2011": 6.5, "2017": 4.0, "2024": 10.0}
+
+    t = client.get("/api/flood/history", params={"level": "tambon", "province": "14"}).json()["data"]
+    assert [(a["code"], a["tambon"], a["years"]) for a in t["areas"]] == \
+        [("140601", "บ้านแพน", [2024]), ("140501", "บางบาล", [2011, 2017])]       # worst year first
+    assert client.get("/api/flood/history", params={"level": "tambon"}).status_code == 400

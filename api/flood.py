@@ -143,3 +143,47 @@ def flood_near(lat: float = Query(..., ge=-90, le=90), lon: float = Query(..., g
                            "radius_km": gistda.NEAR_KM,
                            "nearby": {"cells": near["cells_nearby"] if near else 0,
                                       **_area(near["area_km2_nearby"] if near else 0)}})
+
+
+# --- flood history 2011– (our copy of GISTDA's flood-freq, ingest/gistda_history.py) -----------------------------
+
+def _history_years(conn: psycopg.Connection) -> list[int]:
+    """Every year the copy has a flag for, FIRST_YEAR → the latest year any sub-district flooded."""
+    from ingest.gistda_history import FIRST_YEAR
+    mask = conn.execute("SELECT bit_or(years) AS m FROM flood_history_tambon").fetchone()["m"] or 0
+    return list(range(FIRST_YEAR, FIRST_YEAR + mask.bit_length())) if mask else []
+
+
+@router.get("/api/flood/history")
+def flood_history(level: str = "province", province: str | None = Query(None, max_length=10),
+                  conn: psycopg.Connection = Depends(get_db)):
+    """Flooded years and flooded rai per year, per province (level=province) or per sub-district of one province
+    (level=tambon&province=<pv code>). Codes are GISTDA's pv_idn / tb_idn, the same as the map's outlines.
+    `provinces` lists the provinces copied so far: an area missing from `areas` in one of them never flooded
+    2011–; in any other it is simply not copied yet."""
+    from ingest.gistda_history import years_of
+    if level not in ("province", "tambon"):
+        raise ApiError(400, "bad_request", "level must be province or tambon")
+    if level == "tambon" and not province:
+        raise ApiError(400, "bad_request", "level=tambon needs province")
+    copied = [r["pv_code"] for r in conn.execute("SELECT pv_code FROM flood_history_runs ORDER BY pv_code")]
+    sql = "SELECT tb_code, pv_code, province, amphoe, tambon, years, rai_by_year FROM flood_history_tambon"
+    rows = conn.execute(sql + (" WHERE pv_code = %s" if level == "tambon" else ""),
+                        [province] if level == "tambon" else []).fetchall()
+    if level == "tambon":
+        areas = [{"code": r["tb_code"], "province": r["province"], "amphoe": r["amphoe"], "tambon": r["tambon"],
+                  "years": years_of(r["years"]), "rai_by_year": r["rai_by_year"]} for r in rows]
+    else:
+        by_pv: dict[str, dict] = {}
+        for r in rows:
+            a = by_pv.setdefault(r["pv_code"], {"code": r["pv_code"], "province": r["province"], "amphoe": None,
+                                                "tambon": None, "mask": 0, "rai_by_year": {}})
+            a["mask"] |= r["years"]
+            for y, rai in r["rai_by_year"].items():
+                a["rai_by_year"][y] = a["rai_by_year"].get(y, 0.0) + rai
+        areas = [{**{k: v for k, v in a.items() if k != "mask"}, "years": years_of(a["mask"]),
+                  "rai_by_year": {y: round(v, 1) for y, v in sorted(a["rai_by_year"].items())}}
+                 for a in by_pv.values()]
+    areas.sort(key=lambda a: -max(a["rai_by_year"].values(), default=0))
+    return envelope(conn, {"level": level, "province": province, "years": _history_years(conn),
+                           "provinces": copied, "areas": areas, "source": "GISTDA"})
