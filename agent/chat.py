@@ -7,6 +7,7 @@ import re
 import time
 from contextvars import ContextVar
 from dataclasses import dataclass, field
+from datetime import datetime
 
 from agent import answer, memory, tools, triage, understand
 from agent.text import clean
@@ -156,6 +157,7 @@ class Reply:
     emergency: bool = False                             # danger signalled: the web shows the 1784 card first
     place: dict | None = None                           # {label, lat, lon, approx, saved_label}: lets LINE show a map pin + card
     extra: list[str] = field(default_factory=list)      # notes already inside text that the LINE card does not repeat
+    web_swaps: list[answer.WebSwap] = field(default_factory=list)   # (block, web text): blocks the web draws as cards
 
 
 def _q(label, text=None):
@@ -206,15 +208,18 @@ def handle(conn, external_id: str | None, channel: str, text: str | None = None,
 
 
 def web_reply(reply: Reply) -> Reply:
-    """The web app draws the hotline itself (HotlineNotice under answers with a station source, EmergencyCard
-    above emergency replies), so drop the text copies it would duplicate, and the emoji LINE needs but the
+    """The web app draws stations and shelters as cards from the sources and the hotline itself (HotlineNotice under
+    answers with a station or shelter source, EmergencyCard above emergency replies), so swap the text blocks the
+    cards show for their short web form, drop the text copies of the hotline, and drop the emoji LINE needs but the
     web design system does not. Hotline mentions inside sentences stay. LINE output is never passed through here.
     """
     text = reply.text
+    for block, web in reply.web_swaps:
+        text = text.replace(block, web, 1)
     if reply.emergency:
         text = text.removeprefix(RESCUE_HOTLINE + "\n\n")
-    elif any(s["type"] == "station" for s in reply.sources):
-        text = text.removesuffix("\n\n" + answer.FOOTER)
+    elif any(s["type"] in ("station", "shelter") for s in reply.sources):
+        text = text.replace("\n\n" + answer.FOOTER, "")
     text = "\n".join(_EMOJI.sub("", ln).strip() for ln in text.split("\n"))
     return Reply(text, reply.quick, reply.sources, reply.emergency)
 
@@ -245,8 +250,8 @@ def _route(conn, uid: int, text: str, location) -> Reply:
         if _recent(conn, uid, "_sos", SOS_TTL):        # shared right after a danger message: the coordinates for 1784
             label = _save_shared(conn, uid, lat, lon)
             em = _emergency(conn, uid, "", gps=(lat, lon))
-            text, sources = _assess(conn, uid, lat, lon, label, False)
-            return Reply(em.text + "\n\n" + text, sources=sources, emergency=True)
+            text, sources, swaps = _assess(conn, uid, lat, lon, label, False)
+            return Reply(em.text + "\n\n" + text, sources=sources, emergency=True, web_swaps=swaps)
         return _on_location(conn, uid, location)
     if SET_HOME_RE.fullmatch(t):
         t = SET_HOME
@@ -272,9 +277,9 @@ def _route(conn, uid: int, text: str, location) -> Reply:
             if place and place.amphoe:   # "ตั้งตำแหน่งบ้าน" then "บางบาล อยุธยา": a typed place works like a GPS share
                 _clear_await(conn, uid)
                 tools.save_location(conn, uid, step["label"], place.lat, place.lon, notes=APPROX_NOTE + place.label)
-                text, sources = _assess(conn, uid, place.lat, place.lon, f"{step['label']} {place.label}", True,
-                                        saved=step["label"])
-                return Reply(text, [LOCATION_Q, PROFILE_Q], sources=sources)
+                text, sources, swaps = _assess(conn, uid, place.lat, place.lon, f"{step['label']} {place.label}",
+                                               True, saved=step["label"])
+                return Reply(text, [LOCATION_Q, PROFILE_Q], sources=sources, web_swaps=swaps)
     reply = _route_text(conn, uid, t)
     _clear_pref(conn, uid, "_gps")                   # "ตรงนี้" means the GPS share just before, not an older one
     off_topic = OFF_TOPIC.search(t) and not PLACE_WORDS.search(NOT_FLOOD.sub(" ", t))
@@ -420,7 +425,8 @@ def _evac(conn, uid: int, t: str) -> Reply:
     or the usual check for the place."""
     rest = _shelters(conn, uid, t) if SHELTER_RE.search(t) else _talk(conn, uid, t, force=True)
     if rest.text.startswith("🏫") or rest.sources:
-        return Reply(EVAC_TEXT + "\n\n" + rest.text, rest.quick, rest.sources, place=rest.place, extra=rest.extra)
+        return Reply(EVAC_TEXT + "\n\n" + rest.text, rest.quick, rest.sources, place=rest.place, extra=rest.extra,
+                     web_swaps=rest.web_swaps)
     return Reply(EVAC_TEXT + "\n\nบอกชื่อตำบล อำเภอ จังหวัด หรือกดแชร์ตำแหน่ง แล้วจะเช็คสถานีวัดน้ำใกล้ที่สุดให้",
                  [LOCATION_Q])
 
@@ -456,8 +462,9 @@ def _consent_quick() -> list[QuickReply]:
 
 
 def _assess(conn, uid: int, lat: float, lon: float, label: str, approx: bool,
-            extra: list[str] | None = None, saved: str | None = None) -> tuple[str, list[dict]]:
-    """Reply text plus the sources (stations, shelter, GISTDA) whose numbers that text shows.
+            extra: list[str] | None = None, saved: str | None = None
+            ) -> tuple[str, list[dict], list[answer.WebSwap]]:
+    """Reply text, the sources (stations, shelter, GISTDA) whose numbers that text shows, and the web swaps.
     saved: the label this place was just saved under. Alerts are promised only when a station is in range."""
     prof = tools.get_user_profile(conn, uid)
     mem = memory.merged_view(prof["memory"], prof["pending"])
@@ -469,21 +476,21 @@ def _assess(conn, uid: int, lat: float, lon: float, label: str, approx: bool,
     shelters = tools.find_shelters(conn, lat, lon, {"patients": bool(hh.get("immobile")), "pets": bool(hh.get("pets"))})
     extent = tools.check_flood_extent(conn, lat, lon)
     recurrence = tools.get_flood_recurrence(conn, lat, lon)
-    text = answer.risk_answer(label, approx, stations, shelters, mem, extent, recurrence, extra)
-    return text, _sources(stations, shelters, extent, recurrence, approx)
+    text, swaps = answer.risk_answer(label, approx, stations, shelters, mem, extent, recurrence, extra)
+    return text, _sources(stations, shelters, extent, recurrence, approx, bool(hh.get("immobile"))), swaps
 
 
 def _sources(stations: list[dict], shelters: list[dict], extent: dict | None, recurrence: dict | None,
-             approx: bool) -> list[dict]:
-    """Mirrors what answer.risk_answer prints: main station (+ the worse one if shown), first shelter, GISTDA lines."""
+             approx: bool, need_patients: bool = False) -> list[dict]:
+    """Mirrors what answer.risk_answer prints: main station (+ the worse one if shown), first shelter, GISTDA lines.
+    The worse station goes first: the web draws the first card on top and the LINE card shows only the first."""
     if not stations:            # risk_answer prints no numbers at all without a station
         return []
     main = stations[0]
     worst = max(stations, key=lambda s: rank(s["risk_tier"]))
-    shown = [main] + ([worst] if worst is not main and rank(worst["risk_tier"]) > rank(main["risk_tier"]) else [])
+    shown = ([worst, main] if worst is not main and rank(worst["risk_tier"]) > rank(main["risk_tier"]) else [main])
     out = [_station_source(s) for s in shown]
-    out += [{"type": "shelter", "shelter_id": sh["id"], "name": sh["name"], "distance_km": sh["distance_km"]}
-            for sh in shelters[:1]]
+    out += [_shelter_source(sh, need_patients) for sh in shelters[:1]]
     if extent is not None:
         out.append({"type": "gistda", "kind": "flood_extent", "observed_at": extent["as_of"],
                     "summary": answer.flood_extent_text(extent, approx)})
@@ -495,15 +502,31 @@ def _sources(stations: list[dict], shelters: list[dict], extent: dict | None, re
 def _station_source(s: dict) -> dict:
     """A station Source with the reading the web StationCard draws. Every number is from get_nearest_stations."""
     level, diff = s.get("level_msl"), s.get("diff_wl_bank")
-    return {"type": "station", "station_id": s["station_id"], "code": s["code"], "name_th": s["name_th"],
-            "distance_km": s["distance_km"], "observed_at": s["reading_ts"],
+    ts = s.get("reading_ts")
+    return {"type": "station", "station_id": s["station_id"], "code": answer.display_code(s["code"]) or None,
+            "name_th": s["name_th"], "distance_km": s["distance_km"],
+            "observed_at": datetime.fromisoformat(ts).astimezone(answer.BKK).isoformat() if ts else None,
             "river": s.get("river"), "agency": s.get("agency"),
             "amphoe": s.get("amphoe"), "province": s.get("province"),
             "level_msl": level, "diff_wl_bank": diff,
             "bank_msl": round(level - diff, 2) if level is not None and diff is not None else None,
             "trend_cm_per_hr": s.get("trend_3h_cm_per_hr"), "hours_to_bank": s.get("hours_to_bank"),
             "risk_tier": s.get("risk_tier"),
-            "upstream_over": [u["oldcode"] for u in s.get("upstream") or [] if u.get("risk_tier") == "danger"]}
+            "upstream_over": [answer.display_code(u["oldcode"]) for u in s.get("upstream") or []
+                              if u.get("risk_tier") == "danger"]}
+
+
+def _shelter_source(sh: dict, need_patients: bool) -> dict:
+    """A shelter Source with what the web shelter card draws: DDPM's open status and occupancy, the district, and
+    patients_ok only when it says something (known, or this household needs it), as answer._shelter_desc does."""
+    out = {"type": "shelter", "shelter_id": sh["id"], "name": sh["name"], "distance_km": sh["distance_km"],
+           "lat": sh["lat"], "lon": sh["lon"], "district": sh.get("district"), "province": sh.get("province"),
+           "is_open": sh.get("is_open"), "capacity": sh.get("capacity"),
+           "current_residents": sh.get("current_residents"), "source": sh.get("source")}
+    ok = sh.get("patients_ok")
+    if ok is not None or need_patients:
+        out["patients_ok"] = ok
+    return out
 
 
 def _asks_risk(t: str) -> bool:
@@ -608,10 +631,10 @@ def _talk(conn, uid: int, t: str, force: bool = False) -> Reply:
             extra.append(CONSENT_PROMPT)
             quick = _consent_quick()
         saved = label if label and place else None
-        text, sources = _assess(conn, uid, target[0], target[1], target[2], target[3], extra, saved=saved)
+        text, sources, swaps = _assess(conn, uid, target[0], target[1], target[2], target[3], extra, saved=saved)
         place_info = {"label": target[2], "lat": target[0], "lon": target[1], "approx": target[3],
                       "saved_label": saved}
-        return Reply(text, quick, sources=sources, place=place_info, extra=extra)
+        return Reply(text, quick, sources=sources, place=place_info, extra=extra, web_swaps=swaps)
 
     if facts and not asks:
         lines = memory.describe(facts)
@@ -656,8 +679,8 @@ def _save_here(conn, uid: int, t: str) -> Reply | None:
     if not gps:
         return None
     tools.save_location(conn, uid, name, gps["lat"], gps["lon"])
-    text, sources = _assess(conn, uid, gps["lat"], gps["lon"], name, False, saved=name)
-    return Reply(text, [PROFILE_Q], sources=sources,
+    text, sources, swaps = _assess(conn, uid, gps["lat"], gps["lon"], name, False, saved=name)
+    return Reply(text, [PROFILE_Q], sources=sources, web_swaps=swaps,
                  place={"label": name, "lat": gps["lat"], "lon": gps["lon"], "approx": False, "saved_label": name})
 
 
@@ -733,7 +756,7 @@ def _shelters(conn, uid: int, t: str) -> Reply:
     hh = mem.get("household") or {}
     need_patients = bool(hh.get("immobile"))
     shelters = tools.find_shelters(conn, lat, lon, {"patients": need_patients, "pets": bool(hh.get("pets"))}, k=3)
-    text = answer.shelter_answer(label, approx, shelters, need_patients)
+    text, swaps = answer.shelter_answer(label, approx, shelters, need_patients)
     notes = []
     if LIVESTOCK_RE.search(t):
         notes.append("🐃 ศูนย์พักพิงส่วนใหญ่รับเฉพาะคน สำหรับวัวควายและปศุสัตว์ ถามผู้ใหญ่บ้าน ปศุสัตว์อำเภอ "
@@ -746,16 +769,15 @@ def _shelters(conn, uid: int, t: str) -> Reply:
     if need_consent:
         text += "\n\n" + CONSENT_PROMPT
         quick = _consent_quick()
-    sources = [{"type": "shelter", "shelter_id": sh["id"], "name": sh["name"], "distance_km": sh["distance_km"]}
-               for sh in shelters]
-    return Reply(text, quick, sources=sources)
+    sources = [_shelter_source(sh, need_patients) for sh in shelters]
+    return Reply(text, quick, sources=sources, web_swaps=swaps)
 
 
 def _on_location(conn, uid: int, location) -> Reply:
     lat, lon = location
     label = _save_shared(conn, uid, lat, lon)
-    text, sources = _assess(conn, uid, lat, lon, label, approx=False, saved=label)
-    return Reply(text, [PROFILE_Q], sources=sources,
+    text, sources, swaps = _assess(conn, uid, lat, lon, label, approx=False, saved=label)
+    return Reply(text, [PROFILE_Q], sources=sources, web_swaps=swaps,
                  place={"label": label, "lat": lat, "lon": lon, "approx": False, "saved_label": label})
 
 
@@ -817,8 +839,8 @@ def _home(conn, uid: int) -> Reply:
         return Reply("ยังไม่ได้บันทึก \"บ้าน\" ค่ะ กดแชร์ตำแหน่งที่บ้านได้เลย "
                      "น้ำมาจะบันทึกไว้และแจ้งเตือนเมื่อน้ำสูงขึ้น", [LOCATION_Q])
     approx = bool(loc["notes"] and loc["notes"].startswith("ประมาณ"))
-    text, sources = _assess(conn, uid, loc["lat"], loc["lon"], HOME, approx, [])
-    return Reply(text, [LOCATION_Q, PROFILE_Q], sources=sources,
+    text, sources, swaps = _assess(conn, uid, loc["lat"], loc["lon"], HOME, approx, [])
+    return Reply(text, [LOCATION_Q, PROFILE_Q], sources=sources, web_swaps=swaps,
                  place={"label": HOME, "lat": loc["lat"], "lon": loc["lon"], "approx": approx, "saved_label": None})
 
 

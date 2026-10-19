@@ -58,7 +58,7 @@ def risk_card(place: dict, sources: list[dict], saved_label: str | None) -> dict
     gmap = f"https://www.google.com/maps/search/?api=1&query={place['lat']},{place['lon']}"
     body = [
         _text(f"{st['code']} {st['name_th']}", weight="bold", size="md", color=INK),
-        _text(f"{st.get('river') or 'ไม่ระบุลำน้ำ'} • ห่าง {st['distance_km']:.1f} กม.", size="xs", color=MUTED),
+        _text(" • ".join(filter(None, [st.get("river"), f"ห่าง {st['distance_km']:.1f} กม."])), size="xs", color=MUTED),
         {"type": "separator", "margin": "md"},
         {"type": "box", "layout": "vertical", "spacing": "sm", "margin": "md", "contents": _water_rows(st)},
     ]

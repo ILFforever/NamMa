@@ -1,7 +1,12 @@
 """Thai answer text. Facts lines are templated from tool output (rule 1: numbers only from tools);
 the LLM, when configured, may only rewrite the advice paragraph, and is rejected if it adds numbers.
+
+The web app draws stations and shelters as cards from the sources, so risk_answer and shelter_answer also return
+web swaps: (block of the text, shorter web text). chat.web_reply applies them; LINE gets the full text.
 """
+import re
 from datetime import datetime
+from zoneinfo import ZoneInfo
 
 from agent import llm
 from agent.risk import TIER_TH, rank
@@ -10,21 +15,37 @@ FOOTER = ("ℹ️ น้ำมาเป็นผู้ช่วยไม่เ�
           "☎️ สายด่วน ปภ. 1784 • LINE @1784DDPM")
 FAR_STATION_KM = 20     # beyond this, say the station may not reflect the place
 TIER_ICON = {"normal": "🟢", "watch": "🟡", "warning": "🟠", "danger": "🔴"}
+STATION_NOT_HOUSE = "⚠️ ค่านี้วัดที่สถานีริมแม่น้ำ ไม่ใช่ระดับน้ำที่บ้านโดยตรง ใช้เป็นการประเมินเท่านั้น"
+EVAC_ORDER_NOTE = "ถ้ามีคำสั่งอพยพจากทางการ ให้ไปตามจุดที่ทางการกำหนด"
 
-ADVICE_SYSTEM = """คุณคือ "น้ำมา" ผู้ช่วยเรื่องน้ำท่วม พูดภาษาไทย สุภาพ สงบ ตรงประเด็น
-เขียนคำแนะนำ "สิ่งที่ควรทำตอนนี้" 2-4 ข้อสั้นๆ สำหรับครอบครัวนี้ จากข้อมูลที่ให้เท่านั้น
+BKK = ZoneInfo("Asia/Bangkok")
+
+WebSwap = tuple[str, str]
+
+ADVICE_SYSTEM = """คุณคือ "น้ำมา" ผู้ช่วยเรื่องน้ำท่วม พูดภาษาไทย สุภาพ สงบ ตรงประเด็น ใช้ "ค่ะ" ไม่ใช้ "ครับ"
+เขียนคำแนะนำ "สิ่งที่ควรทำตอนนี้" 2-4 ข้อ สำหรับครอบครัวนี้ จากข้อมูลที่ให้เท่านั้น
+บรรทัดละหนึ่งข้อ ข้อละหนึ่งประโยคสั้นๆ ไม่ต้องทักทาย ไม่ต้องเกริ่นนำหรือสรุป ไม่ใช้ markdown เช่น ** หรือ #
 ห้ามใส่ตัวเลขใดๆ ที่ไม่มีในข้อมูล ห้ามบอกว่าปลอดภัยแน่นอน ห้ามบอกให้เพิกเฉยต่อคำสั่งอพยพของทางการ"""
 
 
+def display_code(code: str | None) -> str:
+    """ThaiWater codes as people know them: "ridhydro_C.36" → "C.36"."""
+    return re.sub(r"^[a-z]+_", "", code or "")
+
+
 def _ts(s: str | None) -> str:
+    """"17:00 น. 19/10" in Bangkok time. reading_ts is written in the risk job's DB session zone (+08:00 on the live
+    server), so the wall clock must be converted, or the text reads an hour off the web card for the same reading."""
     if not s:
         return "-"
     d = datetime.fromisoformat(s)
+    d = d.replace(tzinfo=BKK) if d.tzinfo is None else d.astimezone(BKK)
     return f"{d:%H:%M} น. {d.day}/{d.month}"
 
 
 def station_lines(s: dict) -> list[str]:
-    lines = [f"📡 สถานีวัดน้ำ {s['code']} {s['name_th']} ({s['river'] or 'ไม่ระบุลำน้ำ'}) ห่าง {s['distance_km']:.1f} กม."]
+    river = f" ({s['river']})" if s.get("river") else ""
+    lines = [f"📡 สถานีวัดน้ำ {display_code(s['code'])} {s['name_th']}{river} ห่าง {s['distance_km']:.1f} กม."]
     lvl = f"ระดับน้ำ {s['level_msl']:.2f} ม.รทก."
     d = s.get("diff_wl_bank")
     if d is not None:
@@ -39,6 +60,21 @@ def station_lines(s: dict) -> list[str]:
         lines.append(f"• 3 ชม.ล่าสุด: น้ำลง {abs(t):.1f} ซม./ชม.")
     else:
         lines.append("• 3 ชม.ล่าสุด: ทรงตัว")
+    if forecast := _forecast(s):
+        lines.append("• แบบจำลองคาดการณ์: " + forecast)
+    if s.get("hours_to_bank") is not None:
+        lines.append(f"• ถ้าขึ้นต่อในอัตรานี้ จะถึงระดับตลิ่งในราว {s['hours_to_bank']:.0f} ชม. (ประมาณการ)")
+    for u in s.get("upstream") or []:
+        if u.get("risk_tier") == "danger":
+            eta = f" น้ำใช้เวลาราว {u['approx_travel_hours']:.0f} ชม. มาถึง" if u.get("approx_travel_hours") else ""
+            lines.append(f"• ต้นน้ำ {display_code(u['oldcode'])} {u['name_th']} ล้นตลิ่งแล้ว{eta}")
+    lines.append(f"{TIER_ICON[s['risk_tier']]} ระดับความเสี่ยงที่สถานี: {TIER_TH[s['risk_tier']]}")
+    lines.append(f"ข้อมูล ณ {_ts(s.get('reading_ts'))} จาก ThaiWater (สสน.) / {s['agency'] or '-'}")
+    return lines
+
+
+def _forecast(s: dict) -> str | None:
+    """"+12 ชม. … · +24 ชม. …" from the station's model scores, or None. The web cards don't show these."""
     m = s.get("model") or {}
     parts = []
     for h in ("12", "24"):
@@ -48,17 +84,20 @@ def station_lines(s: dict) -> list[str]:
             parts.append(f"+{h} ชม. {'สูงกว่าตลิ่ง' if d >= 0 else 'ต่ำกว่าตลิ่ง'} {abs(d):.2f} ม. (±{p['mae_cm']:.0f} ซม.)")
         elif p:
             parts.append(f"+{h} ชม. ระดับ {p['level']:.2f} ม.รทก. (±{p['mae_cm']:.0f} ซม.)")
-    if parts:
-        lines.append("• แบบจำลองคาดการณ์: " + " · ".join(parts))
-    if s.get("hours_to_bank") is not None:
-        lines.append(f"• ถ้าขึ้นต่อในอัตรานี้ จะถึงระดับตลิ่งในราว {s['hours_to_bank']:.0f} ชม. (ประมาณการ)")
-    for u in s.get("upstream") or []:
-        if u.get("risk_tier") == "danger":
-            eta = f" น้ำใช้เวลาราว {u['approx_travel_hours']:.0f} ชม. มาถึง" if u.get("approx_travel_hours") else ""
-            lines.append(f"• ต้นน้ำ {u['oldcode']} {u['name_th']} ล้นตลิ่งแล้ว{eta}")
-    lines.append(f"{TIER_ICON[s['risk_tier']]} ระดับความเสี่ยงที่สถานี: {TIER_TH[s['risk_tier']]}")
-    lines.append(f"ข้อมูล ณ {_ts(s.get('reading_ts'))} จาก ThaiWater (สสน.) / {s['agency'] or '-'}")
-    return lines
+    return " · ".join(parts) or None
+
+
+def verdict(s: dict) -> str:
+    """One line for the web, above the station cards: the state at the station that decides the risk. No numbers."""
+    d, t = s.get("diff_wl_bank"), s.get("trend_3h_cm_per_hr")
+    if d is not None and d >= 0:
+        state = "น้ำล้นตลิ่งแล้ว"
+    elif t is not None and t >= 0.5:
+        state = "น้ำกำลังขึ้น"
+    else:
+        state = "น้ำยังต่ำกว่าตลิ่ง"
+    name = s["name_th"] if s["name_th"].startswith("สถานี") else "สถานี" + s["name_th"]
+    return f"{name} {state} · ความเสี่ยงระดับ{TIER_TH[s['risk_tier']]}"
 
 
 def _rai(km2: float) -> str:
@@ -131,8 +170,25 @@ def advice_lines(tier: str, memory: dict, facts_text: str) -> list[str]:
     out = llm.chat([{"role": "system", "content": ADVICE_SYSTEM},
                     {"role": "user", "content": f"ข้อมูล:\n{draft}\n\nเขียนคำแนะนำ"}], max_tokens=300)
     if out and llm.numbers_preserved(draft, out) and "ปลอดภัยแน่นอน" not in out:
-        return [ln.strip(" -•*") for ln in out.strip().splitlines() if ln.strip()]
+        return clean_advice(out) or rules
     return rules
+
+
+_BULLET = re.compile(r"^\s*(?:[-•*]|\d+[.)])\s*")
+_MARKDOWN = re.compile(r"[*#`]+")
+_INTRO = re.compile(r"สวัสดี|ดังนี้\s*:?\s*$|^(?:ผม|ดิฉัน)")
+_END_PARTICLE = re.compile(r"\s*(?:นะ)?(?:ครับ|ค่ะ|คะ)\s*$")
+
+
+def clean_advice(out: str) -> list[str]:
+    """The LLM's advice as at most 4 bullets: no greeting or lead-in line, no markdown, no ครับ (NamMa says ค่ะ)."""
+    items = []
+    for ln in out.strip().splitlines():
+        ln = _MARKDOWN.sub("", _BULLET.sub("", ln)).strip()
+        ln = _END_PARTICLE.sub("", ln).replace("ครับ", "ค่ะ")
+        if ln and not _INTRO.search(ln) and not ln.endswith(":"):
+            items.append(ln)
+    return items[:4]
 
 
 def _shelter_desc(s: dict, need_patients: bool) -> str:
@@ -169,50 +225,69 @@ def shelter_line(shelters: list[dict], need_patients: bool = False) -> list[str]
     return out
 
 
-def shelter_answer(place_label: str, approx: bool, shelters: list[dict], need_patients: bool) -> str:
-    """Answer to "where do I go": the best few shelters near a place, ranked by tools.find_shelters."""
+def shelter_answer(place_label: str, approx: bool, shelters: list[dict],
+                   need_patients: bool) -> tuple[str, list[WebSwap]]:
+    """Answer to "where do I go": the best few shelters near a place, ranked by tools.find_shelters.
+    On the web the list is the shelter card, so the text keeps only a heading and the evacuation-order note."""
     if not shelters:
         return (f"ยังไม่พบข้อมูลศูนย์พักพิงใกล้ {place_label} ค่ะ โทร 1784 (ปภ.) สอบถามศูนย์ที่เปิดอยู่ได้ตลอด 24 ชม.\n\n"
-                + FOOTER)
-    head = f"🏫 ศูนย์พักพิงใกล้ {place_label}" + (" (ตำแหน่งประมาณจากชื่อพื้นที่)" if approx else "")
-    if need_patients:
-        head += " เรียงให้ศูนย์ที่รับผู้ป่วยติดเตียงขึ้นก่อน"
-    lines = [head + ":"]
+                + FOOTER), []
+    where = f"ใกล้ {place_label}" + (" (ตำแหน่งประมาณจากชื่อพื้นที่)" if approx else "")
+    order = " เรียงให้ศูนย์ที่รับผู้ป่วยติดเตียงขึ้นก่อน" if need_patients else ""
+    lines = [f"🏫 ศูนย์พักพิง{where}{order}:"]
     lines += [f"{i}. {_shelter_desc(s, need_patients)}" for i, s in enumerate(shelters, 1)]
     lines.append("")
     lines.append(SHELTER_SOURCE_NOTE if any(s.get("source") == "ddpm" for s in shelters)
                  else "โทร 1784 สอบถามก่อนเดินทางว่าศูนย์ยังรับคนได้")
-    lines.append("ถ้ามีคำสั่งอพยพจากทางการ ให้ไปตามจุดที่ทางการกำหนด")
-    return "\n".join(lines) + "\n\n" + FOOTER
+    lines.append(EVAC_ORDER_NOTE)
+    block = "\n".join(lines)
+    return block + "\n\n" + FOOTER, [(block, f"ศูนย์พักพิง{where}{order}\n{EVAC_ORDER_NOTE}")]
 
 
 def risk_answer(place_label: str, approx: bool, stations: list[dict], shelters: list[dict], memory: dict,
-                extent: dict | None = None, recurrence: dict | None = None, extra: list[str] | None = None) -> str:
-    """extra: follow-up paragraphs (questions, 'saved' notes) placed before the DDPM footer."""
+                extent: dict | None = None, recurrence: dict | None = None,
+                extra: list[str] | None = None) -> tuple[str, list[WebSwap]]:
+    """extra: follow-up paragraphs (questions, 'saved' notes) placed before the DDPM footer.
+    On the web the station lines, GISTDA lines and shelter line become cards and source lines, so the text keeps a
+    one-line verdict, the forecast (no card shows it), the far-station and station-not-house notes, and the advice."""
     tail = "".join("\n\n" + e for e in extra or [])
     if not stations:
         return (f"📍 {place_label}\nตอนนี้ไม่พบสถานีวัดน้ำที่มีข้อมูลล่าสุดในระยะใกล้ จึงประเมินให้ไม่ได้\n"
-                "ลองแชร์ตำแหน่งที่แม่นขึ้น หรือติดตามประกาศของทางการ" + tail + "\n\n" + FOOTER)
+                "ลองแชร์ตำแหน่งที่แม่นขึ้น หรือติดตามประกาศของทางการ" + tail + "\n\n" + FOOTER), []
     main = stations[0]
     worst = max(stations, key=lambda s: rank(s["risk_tier"]))
-    lines = [f"📍 {place_label}" + (" (ตำแหน่งโดยประมาณจากชื่อพื้นที่)" if approx else "")]
-    lines += station_lines(main)
+    shown = [main] + ([worst] if worst is not main and rank(worst["risk_tier"]) > rank(main["risk_tier"]) else [])
+    lines = station_lines(main)
+    far = None
     if main["distance_km"] > FAR_STATION_KM:
-        lines.append(f"⚠️ สถานีที่ใกล้ที่สุดอยู่ห่าง {main['distance_km']:.1f} กม. อาจไม่ตรงกับสถานการณ์ในพื้นที่ "
-                     "ใช้ประกอบกับประกาศของทางการในพื้นที่")
-    if worst is not main and rank(worst["risk_tier"]) > rank(main["risk_tier"]):
+        far = (f"⚠️ สถานีที่ใกล้ที่สุดอยู่ห่าง {main['distance_km']:.1f} กม. อาจไม่ตรงกับสถานการณ์ในพื้นที่ "
+               "ใช้ประกอบกับประกาศของทางการในพื้นที่")
+        lines.append(far)
+    for s in shown[1:]:
         lines.append("")
-        lines += station_lines(worst)
+        lines += station_lines(s)
+    satellite = []                                 # about the place itself, not the river: kept on the web too
     if extent is not None:
-        lines.append("🛰️ " + flood_extent_text(extent, approx))
+        satellite.append("🛰️ " + flood_extent_text(extent, approx))
     if recurrence is not None and (rec := recurrence_text(recurrence, approx)):
-        lines.append("🛰️ " + rec)
-    lines.append("⚠️ ค่านี้วัดที่สถานีริมแม่น้ำ ไม่ใช่ระดับน้ำที่บ้านโดยตรง ใช้เป็นการประเมินเท่านั้น")
-    facts = "\n".join(lines)
+        satellite.append("🛰️ " + rec)
+    lines += satellite
+    lines.append(STATION_NOT_HOUSE)
+    place = f"📍 {place_label}" + (" (ตำแหน่งโดยประมาณจากชื่อพื้นที่)" if approx else "")
+    station_block = "\n".join(lines)
+    facts = place + "\n" + station_block
+    web = [verdict(shown[-1])]                     # the worse station when two are shown
+    web += [f"แบบจำลองคาดการณ์ ({s['name_th']}): {f}" for s in shown if (f := _forecast(s))]
+    web += [far] if far else []
+    web += satellite
+    web.append(STATION_NOT_HOUSE)
+    swaps = [(station_block, "\n".join(web))]
     tier = worst["risk_tier"]
     adv = advice_lines(tier, memory, facts)
     body = facts + "\n\n✅ สิ่งที่ควรทำตอนนี้\n" + "\n".join(f"• {a}" for a in adv)
     sh = shelter_line(shelters, need_patients=bool((memory.get("household") or {}).get("immobile")))
     if sh:
-        body += "\n\n" + "\n".join(sh)
-    return body + tail + "\n\n" + FOOTER
+        shelter_block = "\n\n" + "\n".join(sh)
+        body += shelter_block
+        swaps.append((shelter_block, ""))
+    return body + tail + "\n\n" + FOOTER, swaps

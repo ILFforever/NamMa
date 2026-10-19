@@ -29,8 +29,8 @@ def route(r) -> str:
                          ("บอกได้เลยค่ะ", "edit"), ("ไม่มีข้อมูลสุขภาพ", "forget")):
         if t.startswith(prefix):
             return name
-    if "สถานีวัดน้ำ T." in t or "ไม่พบสถานีวัดน้ำ" in t:
-        return "risk"                                    # the web strips the 📍 emoji
+    if "สถานีวัดน้ำ T." in t or "· ความเสี่ยงระดับ" in t or "ไม่พบสถานีวัดน้ำ" in t:
+        return "risk"                                    # the web strips the 📍 emoji; its verdict replaces the station lines
     if "ศูนย์พักพิงใกล้" in t:
         return "shelter"
     if "กว้างเกิน" in t:

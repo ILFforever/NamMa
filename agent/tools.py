@@ -8,7 +8,7 @@ from datetime import date, datetime, timedelta
 
 from psycopg.rows import dict_row
 
-from agent import gistda, risk
+from agent import answer, gistda, risk
 from agent.geo import haversine_km
 from agent.risk import FRESH_HOURS
 from ingest import store, thaiwater
@@ -53,14 +53,23 @@ def get_nearest_stations(conn, lat: float, lon: float, k: int = 3, fill: bool = 
 
 def _nearest(conn, lat: float, lon: float, k: int) -> list[dict]:
     cutoff = datetime.now().astimezone() - timedelta(hours=FRESH_HOURS)
+    # ThaiWater also lists some RID stations a second time under a source prefix ("ridhydro_C.36") and no river:
+    # take the river from the plain-code row, and keep only the nearer of the two.
     cands = _rows(conn, """
-        SELECT s.id, s.oldcode, s.name_th, s.river, s.province, s.amphoe, s.agency, s.lat, s.lon,
+        SELECT s.id, s.oldcode, s.name_th, s.province, s.amphoe, s.agency, s.lat, s.lon,
+               COALESCE(s.river, (SELECT t.river FROM stations t WHERE t.river IS NOT NULL
+                                  AND t.oldcode = regexp_replace(s.oldcode, '^[a-z]+_', '') LIMIT 1)) AS river,
                r.computed_at, r.level, r.trend_cm_per_hr, r.hours_to_bank, r.risk_tier, r.forecast_json
         FROM stations s JOIN station_risk r ON r.station_id = s.id
         WHERE s.lat IS NOT NULL AND (r.forecast_json->>'reading_ts')::timestamptz >= %s""", (cutoff,))
     for c in cands:
         c["distance_km"] = round(haversine_km(lat, lon, c["lat"], c["lon"]), 1)
-    near = sorted((c for c in cands if c["distance_km"] <= MAX_STATION_KM), key=lambda c: c["distance_km"])[:k]
+    near, seen = [], set()
+    for c in sorted((c for c in cands if c["distance_km"] <= MAX_STATION_KM), key=lambda c: c["distance_km"]):
+        code = answer.display_code(c["oldcode"]) or f"#{c['id']}"
+        if code not in seen and len(near) < k:
+            seen.add(code)
+            near.append(c)
     out = []
     for c in near:
         f = c["forecast_json"] or {}
