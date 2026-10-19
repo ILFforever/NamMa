@@ -57,6 +57,12 @@ NAME_KEYS = {"province": ("pv_tn", "pv_name", "pv_th", "province_name", "prov_na
 CODE_KEYS = {"pv_code": ("pv_idn", "pv_code", "province_code", "prov_code"),
              "ap_code": ("ap_idn", "ap_code", "district_code", "amp_code"),
              "tb_code": ("tb_idn", "tb_code", "subdistrict_code", "tam_code")}
+# Counts of what lies in the flooded cell. Names as other projects report them; only plain counts are read (road
+# length and rice area stay in props until a real response shows their units).
+IMPACT_KEYS = {"buildings": ("building", "buildings", "num_building", "bldg"),
+               "population": ("population", "pop", "pop_total"),
+               "schools": ("school", "schools", "num_school"),
+               "hospitals": ("hospital", "hospitals", "num_hospital")}
 DATE_KEYS = ("date", "flood_date", "acq_date", "acquired", "datetime", "obs_date", "image_date", "update_date",
              "updated_at", "last_update", "created_at", "publish_date")
 NAME_PREFIX = re.compile(r"^(จังหวัด|อำเภอ|ตำบล|เขต|แขวง|จ\.|อ\.|ต\.)\s*")
@@ -166,6 +172,11 @@ def parse_feature(f: dict) -> dict | None:
     if tb and len(tb) == 6 and tb.isdigit():  # tb_idn = province 2 + amphoe 2 + tambon 2 digits
         out["pv_code"] = out["pv_code"] or tb[:2]
         out["ap_code"] = out["ap_code"] or tb[:4]
+    for field, keys in IMPACT_KEYS.items():
+        hit = _first(low, keys)
+        n = _num(hit[1]) if hit else None
+        out[field] = n if n is not None and n >= 0 else None
+        used.update([hit[0]] if out[field] is not None else [])
     if hit := _first(low, DATE_KEYS):
         out["observed_at"] = _when(hit[1])
         used.add(hit[0])
@@ -300,7 +311,7 @@ def archive(period: str, first: dict, key: str | None) -> None:
 # --- storing -----------------------------------------------------------------------------------------
 
 COLS = ("period", "h3", "h3_r5", "h3_r6", "h3_r7", "h3_r8", "lat", "lon", "area_km2", "pv_code", "ap_code", "tb_code",
-        "province", "amphoe", "tambon", "observed_at", "props")
+        "province", "amphoe", "tambon", "observed_at", "buildings", "population", "schools", "hospitals", "props")
 
 
 def store(conn, period: str, rows: list[dict], fp: str | None, unit: str) -> dict:

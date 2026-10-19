@@ -7,6 +7,7 @@ import h3
 import psycopg
 from fastapi import APIRouter, Depends, Query
 
+from agent import gistda
 from api.common import ApiError, envelope, get_db
 
 router = APIRouter()
@@ -20,6 +21,7 @@ LEVELS = {"province": [("province", "pv_code")],
 CELL_RES = (5, 6, 7, 8, 9)       # 9 = the cells as GISTDA sent them; lower = their parents, summed
 # Pad the box by about a parent cell so parents on the edge of the screen are not cut in half.
 PAD_DEG = {5: 0.2, 6: 0.08, 7: 0.03, 8: 0.012, 9: 0.0}
+IMPACT = ("buildings", "population", "schools", "hospitals")   # GISTDA's counts in a cell; null = not sent
 
 
 def _period(period: str) -> str:
@@ -39,6 +41,11 @@ def _layer(conn: psycopg.Connection, period: str) -> dict:
 def _area(km2: float | None) -> dict:
     km2 = km2 or 0.0
     return {"area_km2": round(km2, 4), "area_rai": round(km2 * RAI_PER_KM2)}
+
+
+def _count(v: float | None) -> int | None:
+    """A summed GISTDA count, whole; None when no cell carried it (unknown, not zero)."""
+    return None if v is None else round(v)
 
 
 def _filters(province: str | None, amphoe: str | None) -> tuple[str, list]:
@@ -67,7 +74,8 @@ def flood_areas(period: str = "3days", level: str = "province",
     code = cols[-1][1]
     rows = conn.execute(
         f"SELECT {pick}, max({code}) AS code, count(*) AS cells, sum(area_km2) AS km2, "
-        "sum(lat * area_km2) / nullif(sum(area_km2), 0) AS lat, sum(lon * area_km2) / nullif(sum(area_km2), 0) AS lon "
+        "sum(lat * area_km2) / nullif(sum(area_km2), 0) AS lat, sum(lon * area_km2) / nullif(sum(area_km2), 0) AS lon, "
+        "sum(buildings) AS buildings, sum(population) AS population "
         f"FROM flood_cells WHERE period = %s{where} GROUP BY {group} ORDER BY km2 DESC, {group} LIMIT %s",
         [period, *params, limit]).fetchall()
     total = conn.execute(f"SELECT count(*) AS cells, sum(area_km2) AS km2 FROM flood_cells WHERE period = %s{where}",
@@ -75,7 +83,8 @@ def flood_areas(period: str = "3days", level: str = "province",
     areas = [{"province": r["province"], "amphoe": r.get("amphoe"), "tambon": r.get("tambon"), "code": r["code"],
               "cells": r["cells"], **_area(r["km2"]),
               "lat": None if r["lat"] is None else round(r["lat"], 5),
-              "lon": None if r["lon"] is None else round(r["lon"], 5)} for r in rows]
+              "lon": None if r["lon"] is None else round(r["lon"], 5),
+              "buildings": _count(r["buildings"]), "population": _count(r["population"])} for r in rows]
     return envelope(conn, {**_layer(conn, period), "level": level,
                            "total": {"cells": total["cells"], **_area(total["km2"])}, "areas": areas})
 
@@ -103,7 +112,8 @@ def flood_cells(bbox: str = Query(..., max_length=100), period: str = "3days", r
     box = [period, s - pad, n + pad, w - pad, e + pad]
     where = "period = %s AND lat BETWEEN %s AND %s AND lon BETWEEN %s AND %s"
     if res == 9:
-        rows = conn.execute(f"SELECT h3, 1 AS cells, area_km2 AS km2, province, amphoe, tambon, observed_at "
+        rows = conn.execute(f"SELECT h3, 1 AS cells, area_km2 AS km2, province, amphoe, tambon, observed_at, "
+                            f"{', '.join(IMPACT)} "
                             f"FROM flood_cells WHERE {where} ORDER BY area_km2 DESC, h3 LIMIT %s",
                             [*box, limit + 1]).fetchall()
     else:
@@ -115,6 +125,21 @@ def flood_cells(bbox: str = Query(..., max_length=100), period: str = "3days", r
              "share": round(min(r["km2"] / h3.cell_area(r["h3"], "km^2"), 1.0), 3)}
         if res == 9:
             c |= {"province": r["province"], "amphoe": r["amphoe"], "tambon": r["tambon"],
-                  "observed_at": r["observed_at"]}
+                  "observed_at": r["observed_at"], **{k: _count(r[k]) for k in IMPACT}}
         cells.append(c)
     return envelope(conn, {**_layer(conn, period), "res": res, "truncated": len(rows) > limit, "cells": cells})
+
+
+@router.get("/api/flood/near")
+def flood_near(lat: float = Query(..., ge=-90, le=90), lon: float = Query(..., ge=-180, le=180),
+               period: str = "3days", conn: psycopg.Connection = Depends(get_db)):
+    """Flooding around one point (a saved place): is its own cell flooded, how far is the nearest flooded cell, and
+    the flooded area within radius_km. The same lookup the chat uses (agent/gistda.py), for one period."""
+    _period(period)
+    near = gistda.check_flood_extent(conn, lat, lon, period)
+    return envelope(conn, {**_layer(conn, period),
+                           "at_point": bool(near and near["at_point"]),
+                           "nearest_km": near and near["nearest_km"],
+                           "radius_km": gistda.NEAR_KM,
+                           "nearby": {"cells": near["cells_nearby"] if near else 0,
+                                      **_area(near["area_km2_nearby"] if near else 0)}})

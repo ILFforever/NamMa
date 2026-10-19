@@ -31,7 +31,7 @@ def _layer(n_cells: int = 7, at=BANG_BAN) -> list[dict]:
     cells = ([centre] + sorted(c for c in h3.grid_disk(centre, 1) if c != centre))[:n_cells]
     return [_feature(c, pv_tn="จังหวัดพระนครศรีอยุธยา", ap_tn="อำเภอบางบาล", tb_tn="ตำบลบางหลวงโดด",
                      tb_idn="140504", h3_area=round(h3.cell_area(c, "m^2") * (0.5 if i % 2 else 1.0), 1),
-                     date="2026-10-18", pop_affected=12 * i, link="https://example.org/?api_key=" + KEY)
+                     date="2026-10-18", building=4 * i, population=str(10 * i), pop_affected=12 * i, link="https://example.org/?api_key=" + KEY)
             for i, c in enumerate(cells)]
 
 
@@ -46,6 +46,7 @@ def test_parse_feature_reads_reported_names_and_keeps_the_rest():
     assert c["observed_at"] == datetime(2026, 10, 18, tzinfo=gf.BKK)
     assert c["area_unit"] is None and c["raw_area"] > 100_000                          # h3_area: unit decided later
     assert c["props"] == {"pop_affected": 0}                                           # URL dropped: may carry the key
+    assert (c["buildings"], c["population"], c["schools"]) == (0, 0, None)              # counts read, absent = None
 
 
 def test_parse_feature_finds_the_cell_without_a_named_key():
@@ -206,6 +207,7 @@ def test_flood_areas(api, monkeypatch, tmp_path, small_pages):
     [prov] = d["areas"]
     assert (prov["province"], prov["code"], prov["cells"]) == ("พระนครศรีอยุธยา", "14", 7)
     assert prov["lat"] == pytest.approx(BANG_BAN[0], abs=0.01) and prov["amphoe"] is None
+    assert (prov["buildings"], prov["population"]) == (84, 210)                         # sums of GISTDA's counts
 
     amphoes = client.get("/api/flood/areas", params={"level": "amphoe", "province": "พระนครศรีอยุธยา"}).json()["data"]
     assert [(a["amphoe"], a["cells"]) for a in amphoes["areas"]] == [("บางบาล", 5), ("เสนา", 2)]
@@ -224,7 +226,9 @@ def test_flood_cells_in_view(api, monkeypatch, tmp_path, small_pages):
     d = client.get("/api/flood/cells", params=view).json()["data"]
     assert d["res"] == 9 and d["truncated"] is False and len(d["cells"]) == 7
     c = d["cells"][0]
-    assert set(c) == {"h3", "cells", "area_km2", "share", "province", "amphoe", "tambon", "observed_at"}
+    assert set(c) == {"h3", "cells", "area_km2", "share", "province", "amphoe", "tambon", "observed_at",
+                      "buildings", "population", "schools", "hospitals"}
+    assert c["schools"] is None and c["hospitals"] is None                             # not sent: unknown, not 0
     assert c["share"] == 1.0 and h3.is_valid_cell(c["h3"]) and c["amphoe"] == "บางบาล"   # largest first
 
     parent = client.get("/api/flood/cells", params={**view, "res": 7}).json()["data"]["cells"]
@@ -239,6 +243,24 @@ def test_flood_cells_in_view(api, monkeypatch, tmp_path, small_pages):
     for bad in ({"bbox": "1,2,3"}, {"bbox": "100.5,14,100.4,15"}, {"bbox": "a,b,c,d"}, {"res": 4}, {"period": "x"}):
         assert client.get("/api/flood/cells", params={**view, **bad}).status_code == 400, bad
     assert client.get("/api/flood/cells").status_code == 400                           # bbox is required
+
+
+def test_flood_near_a_place(api, monkeypatch, tmp_path, small_pages):
+    client, conn = api
+    before = client.get("/api/flood/near", params={"lat": BANG_BAN[0], "lon": BANG_BAN[1]}).json()["data"]
+    assert before["fetched_at"] is None and before["nearest_km"] is None and before["nearby"]["cells"] == 0
+
+    _store_layer(conn, monkeypatch, tmp_path, small_pages)
+    here = client.get("/api/flood/near", params={"lat": BANG_BAN[0], "lon": BANG_BAN[1]}).json()["data"]
+    km2 = conn.execute("SELECT sum(area_km2) FROM flood_cells").fetchone()[0]
+    assert here["at_point"] is True and here["radius_km"] == 5.0
+    assert here["nearby"] == {"cells": 7, "area_km2": round(km2, 4), "area_rai": round(km2 * 625)}
+    away = client.get("/api/flood/near", params={"lat": BANG_BAN[0] + 0.02, "lon": BANG_BAN[1]}).json()["data"]
+    assert away["at_point"] is False and 1.0 < away["nearest_km"] < 3.0
+    week = client.get("/api/flood/near", params={"lat": BANG_BAN[0], "lon": BANG_BAN[1], "period": "7days"}).json()
+    assert week["data"]["fetched_at"] is None and week["data"]["at_point"] is False   # only the asked-for period
+    for bad in ({"lat": 91, "lon": 100}, {"lat": 14}, {"lat": 14, "lon": 100, "period": "1day"}):
+        assert client.get("/api/flood/near", params=bad).status_code == 400, bad
 
 
 def test_chat_flood_check_uses_the_stored_layer(api, monkeypatch, tmp_path, small_pages):

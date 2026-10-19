@@ -88,24 +88,37 @@ it; `observed_*` is the range of dates GISTDA gives its cells. All three are **n
 Flooded area per area, largest first, and the total over the same filter.
 - `level`: `province | amphoe | tambon`. `province` / `amphoe` filter by name (no จ./อ. prefix) or GISTDA code.
 - `limit` 1–1000. `lat`/`lon` is the area-weighted centre of the area's cells (to fly the map there).
+- `buildings` / `population`: sums of GISTDA's counts in the area's cells; `null` when GISTDA sent none (unknown, not 0).
 - An area GISTDA names only by code has `null` names and its `code` (`pv_idn` / `ap_idn` / `tb_idn`).
 
 ```jsonc
 { "period": "3days", "fetched_at": "…", "observed_from": "…", "observed_to": "…", "level": "amphoe",
   "total": { "cells": 1180, "area_km2": 121.4, "area_rai": 75875 },
   "areas": [ { "province": "พระนครศรีอยุธยา", "amphoe": "บางบาล", "tambon": null, "code": "1405",
-               "cells": 412, "area_km2": 44.1, "area_rai": 27563, "lat": 14.38, "lon": 100.47 } ] }
+               "cells": 412, "area_km2": 44.1, "area_rai": 27563, "lat": 14.38, "lon": 100.47,
+               "buildings": 1120, "population": 3000 } ] }
 ```
 
 ### `GET /api/flood/cells?bbox=minLon,minLat,maxLon,maxLat&period=3days&res=9&limit=5000` → `FloodCells`
 The flooded cells in the map's view, largest first. The web draws them with h3-js (`cellToBoundary`).
-- `res` 9 = GISTDA's own cells, with `province`, `amphoe`, `tambon`, `observed_at`. `res` 5–8 sums them into parent
+- `res` 9 = GISTDA's own cells, with `province`, `amphoe`, `tambon`, `observed_at` and GISTDA's counts in the cell:
+  `buildings`, `population`, `schools`, `hospitals` (each `null` when not sent). `res` 5–8 sums them into parent
   cells for a zoomed-out map (`cells` = how many res-9 cells). `share` = flooded part of the cell, 0–1.
 - `limit` 1–20000; `truncated: true` when the view holds more. `bbox` is required; a bad box is 400.
 
 ```jsonc
 { "period": "3days", "fetched_at": "…", "observed_from": "…", "observed_to": "…", "res": 7, "truncated": false,
   "cells": [ { "h3": "8764a4770ffffff", "cells": 41, "area_km2": 4.9, "share": 0.93 } ] }
+```
+
+### `GET /api/flood/near?lat=&lon=&period=3days` → `FloodNear`
+Flooding around one point (the flood tab's saved-place banner); the same lookup the chat uses. `at_point`: the point's
+own cell is flooded. `nearest_km`: the nearest flooded cell, `null` when none within `radius_km`. `nearby`: the flooded
+cells within `radius_km`. Before the first download the layer fields are null and `nearby` is zero.
+
+```jsonc
+{ "period": "3days", "fetched_at": "…", "observed_from": "…", "observed_to": "…",
+  "at_point": false, "nearest_km": 0.8, "radius_km": 5.0, "nearby": { "cells": 96, "area_km2": 7.9, "area_rai": 4938 } }
 ```
 
 ## Chat

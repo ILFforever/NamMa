@@ -24,18 +24,20 @@ DAYS = {"3days": 3, "7days": 7}
 TAMBON_KM = 2.0     # the sub-district is the one of the nearest historically flooded cell within this
 
 
-def check_flood_extent(conn, lat: float, lon: float) -> dict | None:
-    """From the newest stored layer with cells in it, 3-day first: is the point's own cell flooded, how far is the
-    nearest flooded cell, and how much is flooded within NEAR_KM.
+def check_flood_extent(conn, lat: float, lon: float, period: str | None = None) -> dict | None:
+    """From the newest stored layer with cells in it, 3-day first (or the given period's): is the point's own cell
+    flooded, how far is the nearest flooded cell, and how much is flooded within NEAR_KM.
 
-    {period, days, at_point, nearest_km (None: none within NEAR_KM), area_km2_nearby, radius_km, as_of, source}
-    as_of is the newest date GISTDA gives the cells, else when we fetched the layer. None before the first fetch.
+    {period, days, at_point, nearest_km (None: none within NEAR_KM), area_km2_nearby, cells_nearby, radius_km,
+    as_of, source}. as_of is the newest date GISTDA gives the cells, else when we fetched the layer.
+    None before the first fetch.
     """
+    periods = [period] if period else list(DAYS)
     with conn.cursor(row_factory=dict_row) as cur:
         fetches = {p: cur.execute("SELECT fetched_at, cells, observed_to FROM flood_fetches WHERE period = %s "
-                                  "ORDER BY fetched_at DESC LIMIT 1", (p,)).fetchone() for p in DAYS}
-        period = next((p for p in DAYS if fetches[p] and fetches[p]["cells"]), None) or \
-            next((p for p in DAYS if fetches[p]), None)
+                                  "ORDER BY fetched_at DESC LIMIT 1", (p,)).fetchone() for p in periods}
+        period = next((p for p in periods if fetches[p] and fetches[p]["cells"]), None) or \
+            next((p for p in periods if fetches[p]), None)
         if period is None:
             return None
         dlat = NEAR_KM / 111.0
@@ -52,6 +54,7 @@ def check_flood_extent(conn, lat: float, lon: float) -> dict | None:
             "at_point": any(r["h3"] == here for _, r in near),
             "nearest_km": None if nearest is None else round(nearest, 1),
             "area_km2_nearby": round(sum(r["area_km2"] for _, r in near), 4),
+            "cells_nearby": len(near),
             "radius_km": NEAR_KM,
             "as_of": (f["observed_to"] or f["fetched_at"]).astimezone(BKK).isoformat(),
             "source": "GISTDA"}
