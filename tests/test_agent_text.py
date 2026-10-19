@@ -58,7 +58,7 @@ def test_gistda_lines():
     assert answer.recurrence_text({"tambon": "บ้านกุ่ม", "years": [2011, 2017, 2022]}) == \
         "สถิติ GISTDA 2011–2024: ต.บ้านกุ่ม มีน้ำท่วม 3 ปี (ล่าสุดปี 2022)"
     assert answer.recurrence_text({"years": []}) is None
-    txt = answer.risk_answer("บ้านแม่", False, [STATION], [], {}, extent, {"tambon": None, "years": [2011]})
+    txt, _ = answer.risk_answer("บ้านแม่", False, [STATION], [], {}, extent, {"tambon": None, "years": [2011]})
     assert "🛰️ ภาพดาวเทียม GISTDA 3 วันล่าสุด" in txt and "🛰️ สถิติ GISTDA 2011–2024: พื้นที่นี้" in txt
 
 
@@ -107,10 +107,61 @@ STATION = {"station_id": 2609, "code": "C.35", "name_th": "บ้านป้อ
 
 
 def test_risk_answer_names_source_and_1784():
-    txt = answer.risk_answer("บ้านแม่ อ.บางบาล", True, [STATION], [], {"household": {"immobile": ["ยาย"]}})
+    txt, _ = answer.risk_answer("บ้านแม่ อ.บางบาล", True, [STATION], [], {"household": {"immobile": ["ยาย"]}})
     assert "C.35 บ้านป้อม" in txt and "3.2 กม." in txt and "สูงกว่าตลิ่ง 0.55 ม." in txt
     assert "1784" in txt and "@1784DDPM" in txt and "ไม่ใช่ระดับน้ำที่บ้านโดยตรง" in txt
     assert "ยาย" in txt and "C.7A" in txt
+
+
+SHELTER = {"id": 7, "name": "โรงเรียนวัดกอไผ่", "district": "บางบาล", "distance_km": 1.9, "is_open": True,
+           "capacity": 60, "current_residents": 5, "patients_ok": None, "source": "ddpm"}
+
+
+def _web(text: str, swaps) -> str:
+    for block, web in swaps:
+        text = text.replace(block, web, 1)
+    return text
+
+
+def test_risk_answer_web_swaps_keep_verdict_and_advice_drop_card_lines():
+    normal = {**STATION, "station_id": 1, "code": "ridhydro_C.36", "name_th": "บ้านบางหลวงโดด", "river": None,
+              "diff_wl_bank": -1.77, "trend_3h_cm_per_hr": -1.0, "risk_tier": "normal", "upstream": []}
+    txt, swaps = answer.risk_answer("บ้าน", True, [normal, STATION], [SHELTER], {}, extra=["📌 บันทึกแล้ว"])
+    # LINE keeps every line, with the plain code and no "ไม่ระบุลำน้ำ".
+    assert "C.36 บ้านบางหลวงโดด ห่าง" in txt and "ridhydro" not in txt and "ไม่ระบุลำน้ำ" not in txt
+    assert "C.35 บ้านป้อม" in txt and "โรงเรียนวัดกอไผ่" in txt
+    web = _web(txt, swaps)
+    # Web: the worse station's verdict, the notes, advice, the extras; the cards carry the numbers and the shelter.
+    assert "สถานีบ้านป้อม น้ำล้นตลิ่งแล้ว · ความเสี่ยงระดับอันตราย" in web
+    assert "ไม่ใช่ระดับน้ำที่บ้านโดยตรง" in web and "สิ่งที่ควรทำตอนนี้" in web and "📌 บันทึกแล้ว" in web
+    assert "C.36" not in web and "0.55" not in web and "โรงเรียนวัดกอไผ่" not in web and "ข้อมูล ณ" not in web
+    assert web.startswith("📍 บ้าน (ตำแหน่งโดยประมาณจากชื่อพื้นที่)\n")
+
+
+def test_shelter_answer_web_swap_keeps_heading_and_evacuation_note():
+    txt, swaps = answer.shelter_answer("บ้านแม่", False, [SHELTER], need_patients=True)
+    assert "1. โรงเรียนวัดกอไผ่ อ.บางบาล ห่าง 1.9 กม. (เปิดรับอยู่ มีผู้พัก 5/60 คน" in txt
+    web = _web(txt, swaps)
+    assert web.startswith("ศูนย์พักพิงใกล้ บ้านแม่ เรียงให้ศูนย์ที่รับผู้ป่วยติดเตียงขึ้นก่อน\n")
+    assert answer.EVAC_ORDER_NOTE in web and "โรงเรียนวัดกอไผ่" not in web
+
+
+def test_display_code_and_bangkok_time():
+    assert answer.display_code("ridhydro_Y.50") == "Y.50" and answer.display_code("CPY009") == "CPY009"
+    assert answer.display_code(None) == ""
+    # The live risk job writes +08:00; the text must say the Bangkok time the web card shows.
+    assert answer._ts("2026-10-19T18:00:00+08:00") == "17:00 น. 19/10"
+    assert answer._ts("2026-10-19T17:10:00") == "17:10 น. 19/10"
+
+
+def test_clean_advice_drops_greeting_markdown_and_krub():
+    out = ('สวัสดีครับ ผม "น้ำมา" ขอสรุปสิ่งที่ควรทำตอนนี้สำหรับครอบครัวคุณใน อ.บางบาล ดังนี้ครับ\n'
+           "* **เตรียมพร้อมอพยพทันที:** ย้ายคนและของสำคัญขึ้นที่สูงครับ\n"
+           "2. ปิดเบรกเกอร์ไฟฟ้าหลัก\n\n"
+           "- ติดตามประกาศทางการ ถ้ามีคำสั่งให้อพยพ ทำตามทันทีนะครับ\n"
+           "• เตรียมยา\n• เตรียมเอกสาร")
+    assert answer.clean_advice(out) == ["เตรียมพร้อมอพยพทันที: ย้ายคนและของสำคัญขึ้นที่สูง", "ปิดเบรกเกอร์ไฟฟ้าหลัก",
+                                        "ติดตามประกาศทางการ ถ้ามีคำสั่งให้อพยพ ทำตามทันที", "เตรียมยา"]
 
 
 def test_alert_decide():

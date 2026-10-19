@@ -71,7 +71,10 @@ def test_question_about_a_station_returns_reply_sources_and_quick_replies(seeded
     d = body["data"]
     assert set(d) == {"reply", "sources", "quick_replies", "emergency"}
     # The web draws HotlineNotice under answers with a station source: no text copy, no emoji (LINE keeps both).
-    assert "T.1" in d["reply"] and "1784" not in d["reply"] and not chat._EMOJI.search(d["reply"])
+    # The station reading and the shelter are cards, so the text has the verdict instead of the station lines.
+    assert "1784" not in d["reply"] and not chat._EMOJI.search(d["reply"])
+    assert "สถานีทดสอบ น้ำ" in d["reply"] and "T.1" not in d["reply"] and "ศูนย์ทดสอบ" not in d["reply"]
+    assert "สิ่งที่ควรทำตอนนี้\n• " in d["reply"]
     station = next(s for s in d["sources"] if s["type"] == "station")
     assert station["station_id"] == STATION and station["code"] == "T.1" and station["name_th"] == "สถานีทดสอบ"
     assert 0 < station["distance_km"] < 60 and station["observed_at"]
@@ -81,7 +84,10 @@ def test_question_about_a_station_returns_reply_sources_and_quick_replies(seeded
     assert station["bank_msl"] == pytest.approx(5.5)
     assert station["trend_cm_per_hr"] == pytest.approx(1.0, abs=0.01)
     assert station["risk_tier"] in ("normal", "watch") and station["upstream_over"] == []
-    assert any(s["type"] == "shelter" and s["name"] == "ศูนย์ทดสอบ" for s in d["sources"])
+    assert station["observed_at"].endswith("+07:00")
+    shelter = next(s for s in d["sources"] if s["type"] == "shelter")
+    assert shelter["name"] == "ศูนย์ทดสอบ" and shelter["patients_ok"] is True     # known, so the card shows it
+    assert {"lat", "lon", "district", "is_open", "capacity", "current_residents", "source"} <= set(shelter)
     assert not any(s["type"] == "gistda" for s in d["sources"])        # no flood layer stored: no satellite line
     assert d["emergency"] is False
     assert {q["type"] for q in d["quick_replies"]} >= {"location", "message"}
@@ -93,7 +99,23 @@ def test_location_message_returns_nearest_station(seeded):
     r = _chat(client, {"session_id": str(uuid.uuid4()), "location": {"lat": 14.41, "lon": 100.46}})
     d = r.json()["data"]
     assert [s["code"] for s in d["sources"] if s["type"] == "station"] == ["T.1"]
-    assert "T.1" in d["reply"]
+    assert "สถานีทดสอบ" in d["reply"]
+
+
+def test_prefixed_duplicate_station_shows_once_with_plain_code_and_river(seeded):
+    """ThaiWater lists some RID stations twice, the second as "ridhydro_<code>" with no river: one card, plain code,
+    the river taken from the plain-code row."""
+    client, conn = seeded
+    conn.execute("INSERT INTO stations (id, oldcode, name_th, lat, lon, agency) "
+                 "VALUES (9102, 'ridhydro_T.1', 'สถานีทดสอบ', 14.4101, 100.4601, 'RID')")
+    for h in range(4):
+        conn.execute("INSERT INTO waterlevel_readings (station_id, ts, level_msl, diff_wl_bank) "
+                     "VALUES (9102, %s, %s, %s)", (NOW - timedelta(hours=3 - h), 4.0, -1.5))
+    risk.compute_all(conn, NOW)
+    d = _chat(client, {"session_id": str(uuid.uuid4()), "location": {"lat": 14.41, "lon": 100.46}}).json()["data"]
+    stations = [s for s in d["sources"] if s["type"] == "station"]
+    assert [s["code"] for s in stations] == ["T.1"] and stations[0]["river"] == "แม่น้ำทดสอบ"
+    assert "ridhydro" not in d["reply"]
 
 
 def test_danger_message_is_emergency_with_what_to_tell_1784(seeded):
@@ -179,8 +201,11 @@ def test_rate_limit_is_20_per_minute_per_session(seeded):
 def test_shelter_question_lists_shelters_near_the_named_place(seeded):
     client, _ = seeded
     d = _chat(client, {"session_id": str(uuid.uuid4()), "message": "ศูนย์พักพิงแถวบางบาล อยุธยา มีที่ไหนบ้าง"}).json()["data"]
-    assert "ศูนย์ทดสอบ" in d["reply"] and "บางบาล" in d["reply"] and "1784" in d["reply"]
+    # The list is the web shelter card and the hotline is HotlineNotice: the text is the heading and the order note.
+    assert "บางบาล" in d["reply"] and "ศูนย์ทดสอบ" not in d["reply"] and "1784" not in d["reply"]
+    assert "ตามจุดที่ทางการกำหนด" in d["reply"]
     assert [s["type"] for s in d["sources"]] == ["shelter"] and d["sources"][0]["name"] == "ศูนย์ทดสอบ"
+    assert d["sources"][0]["distance_km"] is not None and "is_open" in d["sources"][0]
     assert d["emergency"] is False
 
 
