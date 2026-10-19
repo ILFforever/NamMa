@@ -8,7 +8,7 @@ import time
 from dataclasses import dataclass, field
 
 from agent import answer, memory, tools, triage
-from agent.geo import find_place
+from agent.geo import PROVINCE_ALIASES, find_place, place_candidates
 from agent.risk import rank
 
 CONSENT_YES, CONSENT_NO = "ยินยอมให้จำข้อมูล", "ไม่ยินยอม"
@@ -16,12 +16,48 @@ FORGET_ALL_TEXT = "ลบข้อมูลทั้งหมด"  # same text a
 APPROX_NOTE = "ประมาณจากชื่อพื้นที่: "  # user_locations.notes of a place geocoded from its name, not a GPS share
 CONSENT_PROMPT = ("🔒 ขออนุญาตจำข้อมูลนี้ เพื่อแจ้งเตือนและช่วยเหลือได้เร็วขึ้นไหม?\n"
                   "ข้อมูลสุขภาพเป็นข้อมูลอ่อนไหวตาม PDPA ถ้าไม่ยินยอม จะใช้เฉพาะในบทสนทนานี้")
-HELP = ("สวัสดีค่ะ น้ำมาช่วยดูความเสี่ยงน้ำท่วมจากข้อมูลสถานีวัดน้ำจริง\n"
-        "ลองพิมพ์ เช่น \"บ้านแม่อยู่บางบาล อยุธยา น้ำจะถึงไหม\" หรือกดแชร์ตำแหน่ง\n"
-        "ถ้าอยู่ในอันตราย โทร 1784 (ปภ.) ได้ทันที\n\n" + answer.FOOTER)
+_ABOUT = ("น้ำมาช่วยดูความเสี่ยงน้ำท่วมจากข้อมูลสถานีวัดน้ำจริง\n"
+          "ลองพิมพ์ เช่น \"บ้านแม่อยู่บางบาล อยุธยา น้ำจะถึงไหม\" หรือกดแชร์ตำแหน่ง\n"
+          "ถ้าอยู่ในอันตราย โทร 1784 (ปภ.) ได้ทันที\n\n" + answer.FOOTER)
+HELP = "สวัสดีค่ะ " + _ABOUT                              # only for a greeting
+NOT_UNDERSTOOD = "น้ำมายังไม่เข้าใจข้อความนี้ค่ะ " + _ABOUT   # anything else nothing matched: never answered with a greeting
+GREETING_RE = re.compile(r"^(สวัสดี|หวัดดี|ดีค่ะ|ดีครับ|ดีจ้า|เริ่ม|ช่วยอะไรได้|ทำอะไรได้|คุณคือใคร|ใช้ยังไง|"
+                         r"(hello|hi|hey|start|good ?(morning|afternoon|evening))\b|おはよう|こんにちは)", re.I)
+THANKS_RE = re.compile(r"^(ขอบคุณ|ขอบใจ|thx|thanks|thank you|ลาก่อน|บาย|bye)", re.I)
+THANKS = "ยินดีค่ะ ถ้าอยากให้เช็คอีก พิมพ์ชื่อพื้นที่หรือกดแชร์ตำแหน่งได้ตลอด\nถ้าอยู่ในอันตราย โทร 1784 (ปภ.) ได้ทันที"
 # "Where do I go": shelters, evacuation centres. Checked after danger, so "ติดอยู่ ไปศูนย์พักพิงไม่ได้" is still danger.
-SHELTER_RE = re.compile(r"ศูนย์พักพิง|ที่พักพิง|ศูนย์อพยพ|จุดอพยพ|อพยพไปที่ไหน|อพยพไปไหน|ไปพักที่ไหน|ที่หลบภัย")
-RISK_WORDS = ("น้ำ", "ท่วม", "ตลิ่ง", "ระดับ", "อพยพ", "เสี่ยง")
+SHELTER_RE = re.compile(r"ศูนย์พักพิง|ที่พักพิง|ศูนย์อพยพ|จุดอพยพ|อพยพไปที่ไหน|อพยพไปไหน|ไปพักที่ไหน|ที่หลบภัย|"
+                        r"ไปนอนที่ไหน|ไปนอนไหน|ที่พักฉุกเฉิน|ที่พักชั่วคราว|หลบน้ำ|หนีไปไหน|หนีไปที่ไหน|ไปไหนดี|"
+                        r"ไปที่ไหนดี|(มี)?ที่(ไหน)?รับ(สัตว์|คน|ผู้|เด็ก)|shelter|evacuation cent", re.I)
+RISK_WORDS = ("น้ำ", "ท่วม", "ตลิ่ง", "อพยพ", "เสี่ยง", "ฝนตก", "ดินถล่ม", "ดินสไลด์", "ดินโคลน", "flood", "water level")
+# Words with น้ำ/ฝน/ปลอดภัย… in them that are not about floods: removed before looking for a risk question.
+NOT_FLOOD = re.compile(r"น้ำหอม|น้ำใจ|น้ำตา|น้ำผลไม้|น้ำมัน|น้ำปลา|น้ำแข็ง|หิวน้ำ|น้ำตก|อาบน้ำ|ห้องน้ำ|น้ำเสียง|"
+                       r"น้ำหนัก|ท่อน้ำ|น้ำประปา|ตลาดน้ำ|น้ำท่วมปาก|น้ำชา|น้ำอัดลม|น้ำเปล่า|ดอยคำ|ไซเบอร์|"
+                       r"ต่อสายตา|ข้อสอบ|หนัง|เกม|ระดับความ|ฝนดาวตก|ฝนตกพรำ")
+# Clearly about something else ("ปลอดภัยไซเบอร์", "อันตรายต่อสายตา"): not a risk question unless a flood word is there too.
+OFF_TOPIC = re.compile(r"ไซเบอร์|สายตา|สุขภาพจิต|ข้อสอบ|หนัง|เกม|ระดับความ|ออนไลน์|รหัสผ่าน|password|cyber", re.I)
+FLOOD_WORDS = re.compile(r"น้ำ|ท่วม|ฝน|ดินถล่ม|ดินโคลน|อพยพ|flood")
+# "Will I be OK?" with no flood word in it ("บ้านอยู่ตีนดอยสุเทพ จะเป็นอะไรไหม") is still a risk question.
+CONCERN_RE = re.compile(r"เป็นอะไร(ไหม|มั้ย|มั๊ย|หรือเปล่า|รึเปล่า|ป่าว|ป่ะ)|เป็นไร(ไหม|มั้ย|มั๊ย)|เป็นหยัง|"
+                        r"ปลอดภัย|อันตราย|น่าห่วง|น่ากลัว|ต้องย้าย|ต้องหนี|ต้องออกจาก|โดน(ไหม|มั้ย|ด้วย)|"
+                        r"รอด(ไหม|มั้ย)|ถึง(ไหม|มั้ย)|is (it|my \w+) (ok|safe)|\bsafe\b", re.I)
+# "เป็นไงบ้าง" is a risk question only about a place: "บ้านเป็นไงบ้าง", "แถวนี้เป็นยังไง".
+HOW_IS_RE = re.compile(r"เป็นไง|เป็นยังไง|เป็นอย่างไร")
+PLACE_WORDS = re.compile(r"บ้าน|แถวนี้|ที่นี่|ตรงนี้|ที่นั่น|ทางนี้|แถวบ้าน|ที่ทำงาน")
+# Places people name besides homes; "ที่ทำงานจะท่วมไหม" with no saved ที่ทำงาน is asked about, not answered for บ้าน.
+OTHER_PLACES = re.compile(r"ที่ทำงาน|ออฟฟิศ|โรงเรียน|คอนโด|หอพัก|โรงงาน")
+# Asking for a promise of safety, or whether to evacuate: always answered with "follow official orders" (rule 3).
+ASSURE_RE = re.compile(r"ปลอดภัย|รับรอง|แน่นอน|ไม่ท่วมแน่|อพยพ(ไหม|มั้ย)|ต้องอพยพ|ควรอพยพ|ไม่ต้องอพยพ|ต้องหนี|"
+                       r"คำสั่งอพยพ|สั่งอพยพ|ย้ายของ|safe|evacuat", re.I)
+ASSURE_NOTE = ("📢 น้ำมารับรองว่าปลอดภัยไม่ได้ ข้อมูลนี้เป็นการประเมินจากสถานีวัดน้ำเท่านั้น "
+               "ถ้าทางการประกาศให้อพยพ ให้อพยพตามคำสั่งทันที สอบถามได้ที่ ปภ. 1784")
+# Hillside places: river stations say nothing about flash floods or landslides there, so say so (rule 4).
+HILL_RE = re.compile(r"ดอย|ภูเขา|เชิงเขา|ตีนเขา|ไหล่เขา|หุบเขา|ติดเขา|ใกล้เขา|บนเขา|ริมเขา|น้ำป่า|ดินถล่ม|"
+                     r"ดินสไลด์|ดินโคลน|ห้วย")
+HILL_NOTE = ("⛰️ สถานีวัดน้ำวัดระดับน้ำในแม่น้ำ ไม่ได้วัดน้ำป่าไหลหลากหรือดินถล่มบนเขา "
+             "ถ้าฝนตกหนักต่อเนื่อง น้ำในลำห้วยขุ่นเป็นสีโคลน หรือได้ยินเสียงดังผิดปกติจากบนเขา "
+             "ให้ออกจากริมห้วยและที่ลาดเชิงเขาทันที และติดตามประกาศของกรมอุตุนิยมวิทยาและ ปภ.")
+CANCEL_RE = re.compile(r"^(ยกเลิก|ไม่เอา|ไม่ต้อง|cancel)", re.I)
 RESCUE_HOTLINE = "🚨 ถ้าอันตรายตอนนี้ โทร 1784 (ปภ.) หรือ 1669 (เจ็บป่วยฉุกเฉิน) ทันที • LINE @1784DDPM"
 # Pictographs and their joiners/variation selectors. Thai (U+0E00 block), "•", "—" and "±" are outside these ranges.
 _EMOJI = re.compile("[\U0001F000-\U0001FAFF\u2139\u2600-\u27BF\u2B00-\u2BFF\uFE0F\u200D] ?")
@@ -96,8 +132,10 @@ def web_reply(reply: Reply) -> Reply:
 def _route(conn, uid: int, text: str, location) -> Reply:
     t = text.strip()
     if t == CONSENT_YES:
-        tools.record_consent(conn, uid, True)
         facts = tools.pop_pending(conn, uid)
+        if not facts:
+            return Reply("ตอนนี้ไม่มีข้อมูลที่รอการยินยอมค่ะ ดูข้อมูลที่จำไว้ได้ที่ปุ่มด้านล่าง", [PROFILE_Q])
+        tools.record_consent(conn, uid, True)
         tools.merge_memory(conn, uid, facts)
         lines = memory.describe(facts)
         return Reply("ขอบคุณค่ะ บันทึกแล้ว: " + (", ".join(lines) if lines else "-") +
@@ -109,19 +147,31 @@ def _route(conn, uid: int, text: str, location) -> Reply:
         return _on_location(conn, uid, location)
     if t in (SET_HOME, ADD_PLACE, ADD_FACTS):
         return _start_edit(conn, uid, t)
-    if (step := _awaiting(conn, uid)) and step["step"] == "name" and 0 < len(t) <= 30 and not triage.is_danger(t):
-        return _got_place_name(conn, uid, t)
+    if (step := _awaiting(conn, uid)) and step["step"] == "name":
+        if CANCEL_RE.match(t):
+            _clear_await(conn, uid)
+            return Reply("ยกเลิกการเพิ่มสถานที่แล้วค่ะ", [PROFILE_Q])
+        if _place_name_ok(t):
+            return _got_place_name(conn, uid, t)
+        _clear_await(conn, uid)          # a question or a place sentence, not a name: answer it instead
     if t == HOME:
         return _home(conn, uid)
     if triage.is_danger(t):
         return _emergency(conn, uid, t)
-    if re.search(r"จำอะไร|ข้อมูลอะไรที่จำ|ข้อมูลของฉัน|โปรไฟล์", t):
-        return _profile(conn, uid)
-    if t.startswith("ลบ"):
+    asks = _asks_risk(t)
+    if t.startswith("ลบ") and not asks:
         return _forget(conn, uid, t)
+    if re.search(r"จำอะไร|ข้อมูลอะไรที่จำ|ข้อมูลของฉัน|โปรไฟล์", t) and not asks:
+        return _profile(conn, uid)
     if SHELTER_RE.search(t):
         return _shelters(conn, uid, t)
     return _talk(conn, uid, t)
+
+
+def _place_name_ok(t: str) -> bool:
+    """A name for the place being added ("บ้านแม่", "ร้าน"), not a question, a sentence or a place description."""
+    return (0 < len(t) <= 20 and "?" not in t and not _asks_risk(t) and not triage.is_danger(t)
+            and not find_place(t) and t not in (SET_HOME, ADD_PLACE, ADD_FACTS, CONSENT_YES, CONSENT_NO))
 
 
 def _remember(conn, uid: int, text: str) -> tuple[dict, bool]:
@@ -145,11 +195,15 @@ def _consent_quick() -> list[QuickReply]:
 
 
 def _assess(conn, uid: int, lat: float, lon: float, label: str, approx: bool,
-            extra: list[str] | None = None) -> tuple[str, list[dict]]:
-    """Reply text plus the sources (stations, shelter, GISTDA) whose numbers that text shows."""
+            extra: list[str] | None = None, saved: str | None = None) -> tuple[str, list[dict]]:
+    """Reply text plus the sources (stations, shelter, GISTDA) whose numbers that text shows.
+    saved: the label this place was just saved under. Alerts are promised only when a station is in range."""
     prof = tools.get_user_profile(conn, uid)
     mem = memory.merged_view(prof["memory"], prof["pending"])
     stations = tools.get_nearest_stations(conn, lat, lon, k=3)
+    if saved:
+        extra = [f"📌 บันทึก \"{saved}\" ไว้แล้ว " + ("ถ้าน้ำที่สถานีใกล้ๆ สูงขึ้น จะส่งข้อความเตือน" if stations
+                 else "แต่ตอนนี้ยังไม่มีสถานีวัดน้ำใกล้พอที่จะแจ้งเตือนได้")] + list(extra or [])
     hh = mem.get("household") or {}
     shelters = tools.find_shelters(conn, lat, lon, {"patients": bool(hh.get("immobile")), "pets": bool(hh.get("pets"))})
     extent = tools.check_flood_extent(conn, lat, lon)
@@ -191,44 +245,119 @@ def _station_source(s: dict) -> dict:
             "upstream_over": [u["oldcode"] for u in s.get("upstream") or [] if u.get("risk_tier") == "danger"]}
 
 
+def _asks_risk(t: str) -> bool:
+    if OFF_TOPIC.search(t) and not FLOOD_WORDS.search(NOT_FLOOD.sub(" ", t)):
+        return False
+    t = NOT_FLOOD.sub(" ", t).lower()
+    return (any(w in t for w in RISK_WORDS) or bool(CONCERN_RE.search(t.replace(" ", "")) or CONCERN_RE.search(t))
+            or bool(HOW_IS_RE.search(t) and PLACE_WORDS.search(t)))
+
+
+def _saved_named(t: str, locations: list[dict]) -> dict | None:
+    """The saved place whose label the text names, longest label first ("บ้านแม่" before "บ้าน")."""
+    named = [l for l in locations if l["label"] in t]
+    return max(named, key=lambda l: len(l["label"])) if named else None
+
+
+def _mostly_place(t: str, place) -> bool:
+    """"บางบาล อยุธยา" alone is a request to check it; "ไปเที่ยวบ้านโพธิ์ไหม" is not."""
+    rest = t.replace(" ", "")
+    for name in (place.tambon, place.amphoe, place.province, "ตำบล", "อำเภอ", "จังหวัด", "ต.", "อ.", "จ.",
+                 *(a for a, v in PROVINCE_ALIASES.items() if v == place.province)):
+        if name:
+            rest = rest.replace(name, "")
+    return len(rest) <= 4
+
+
 def _talk(conn, uid: int, t: str) -> Reply:
     facts, need_consent = _remember(conn, uid, t)
+    prof = tools.get_user_profile(conn, uid)
+    saved_labels = tuple(l["label"] for l in prof["locations"])
     place = find_place(t)
     label = memory.location_label(t)
-    prof = tools.get_user_profile(conn, uid)
+    asks = _asks_risk(t)
+    hill = bool(HILL_RE.search(NOT_FLOOD.sub(" ", t).replace(" ", "")))
+    assure = bool(ASSURE_RE.search(t))
+    if place and not (asks or label or _mostly_place(t, place)):
+        place = None                     # a place mentioned in passing, not a question about it
+    if place and not place.amphoe:
+        return _ask_place(label, [], hill, assure, need_consent, province=place.province)
+    cands = [] if place else place_candidates(t, skip=saved_labels)
+    named = _saved_named(t, prof["locations"])
+    other = OTHER_PLACES.search(t)
+    # The message names a place we could not pin down ("บ้านอยู่ตีนดอยสุเทพ", "ที่ทำงาน" not saved): ask which one,
+    # never answer for a different saved place instead.
+    unresolved = not place and bool(cands or (label and (label not in saved_labels or "อยู่" in t))
+                                    or (other and not (named and other.group(0) in named["label"])))
     target = None
     if place:
         target = (place.lat, place.lon, (label + " " if label else "") + place.label, True)
         if label:
             tools.save_location(conn, uid, label, place.lat, place.lon, notes=APPROX_NOTE + place.label)
-    elif prof["locations"] and any(w in t for w in RISK_WORDS):
-        loc = next((l for l in prof["locations"] if l["label"] in t), prof["locations"][0])
+    elif prof["locations"] and asks and not unresolved:
+        loc = named or prof["locations"][0]
         target = (loc["lat"], loc["lon"], loc["label"], _approx(loc))
 
     if target:
         extra = []
-        if label and place:
-            extra.append(f"📌 บันทึก \"{label}\" ไว้แล้ว ถ้าน้ำที่สถานีใกล้ๆ สูงขึ้น จะส่งข้อความเตือน")
+        if assure:
+            extra.append(ASSURE_NOTE)
+        if hill:
+            extra.append(HILL_NOTE)
         if not prof["memory"].get("household") and not prof["pending"]:
             extra.append("👪 ที่บ้านมีผู้สูงอายุ คนที่เดินไม่ได้ เด็กเล็ก หรือสัตว์เลี้ยงไหม? บอกได้ จะช่วยวางแผนให้เหมาะกับครอบครัว")
         quick = [LOCATION_Q, PROFILE_Q]
         if need_consent:
             extra.append(CONSENT_PROMPT)
             quick = _consent_quick()
-        text, sources = _assess(conn, uid, target[0], target[1], target[2], target[3], extra)
+        saved = label if label and place else None
+        text, sources = _assess(conn, uid, target[0], target[1], target[2], target[3], extra, saved=saved)
         place_info = {"label": target[2], "lat": target[0], "lon": target[1], "approx": target[3],
-                      "saved_label": label if label and place else None}
-        return Reply(text, quick, sources=sources, place=place_info,
-                     extra=[e for e in extra if not e.startswith("📌")])
+                      "saved_label": saved}
+        return Reply(text, quick, sources=sources, place=place_info, extra=extra)
 
-    if facts:
+    if facts and not asks:
         lines = memory.describe(facts)
         if need_consent:
             return Reply("รับทราบค่ะ: " + ", ".join(lines) + "\n\n" + CONSENT_PROMPT, _consent_quick())
         return Reply("รับทราบและบันทึกแล้วค่ะ: " + ", ".join(lines), [PROFILE_Q])
-    if any(w in t for w in RISK_WORDS):
-        return Reply("บอกชื่อตำบล/อำเภอ/จังหวัด หรือกดแชร์ตำแหน่ง แล้วจะเช็คสถานีวัดน้ำใกล้ที่สุดให้ค่ะ", [LOCATION_Q])
-    return Reply(HELP, [LOCATION_Q, _q("บ้านอยู่บางบาล อยุธยา น้ำจะถึงไหม")])
+    if unresolved or asks:
+        reply = _ask_place(label, cands, hill, assure, need_consent)
+        if facts and (lines := memory.describe(facts)) and not need_consent:
+            reply.text = "รับทราบและบันทึกแล้วค่ะ: " + ", ".join(lines) + "\n\n" + reply.text
+        return reply
+    if GREETING_RE.match(t):
+        return Reply(HELP, [LOCATION_Q, _q("บ้านอยู่บางบาล อยุธยา น้ำจะถึงไหม")])
+    if THANKS_RE.match(t):
+        return Reply(THANKS, [LOCATION_Q])
+    return Reply(NOT_UNDERSTOOD, [LOCATION_Q, _q("บ้านอยู่บางบาล อยุธยา น้ำจะถึงไหม")])
+
+
+def _ask_place(label: str | None, cands: list, hill: bool, assure: bool, need_consent: bool,
+               province: str | None = None) -> Reply:
+    """A risk question we cannot place yet. Offer the subdistricts it names, else ask for the district."""
+    if province:
+        lines = [f"จ.{province} กว้างเกินกว่าจะประเมินจากสถานีวัดน้ำได้ค่ะ บอกอำเภอหรือตำบลด้วย "
+                 f"(เช่น \"บ้านอยู่ ต.... อ.... จ.{province}\") หรือกดแชร์ตำแหน่ง"]
+        quick = [LOCATION_Q]
+    elif cands:
+        lines = ["หมายถึงพื้นที่ไหนคะ? กดเลือกด้านล่าง หรือพิมพ์ชื่อตำบล อำเภอ จังหวัดให้ครบ"]
+        lines += [f"• {p.label}" for p in cands]
+        quick = [_q(f"ต.{p.tambon} {p.province}", f"{label + 'อยู่ ' if label else ''}{p.label} น้ำจะถึงไหม")
+                 for p in cands] + [LOCATION_Q]
+    else:
+        lines = ["ยังหาตำแหน่งนี้ไม่เจอค่ะ บอกชื่อตำบล อำเภอ และจังหวัด (เช่น \"บ้านอยู่บางบาล อยุธยา\") "
+                 "หรือกดแชร์ตำแหน่ง แล้วจะเช็คสถานีวัดน้ำใกล้ที่สุดให้"]
+        quick = [LOCATION_Q]
+    if assure:
+        lines += ["", ASSURE_NOTE]
+    if hill:
+        lines += ["", HILL_NOTE]
+    lines += ["", "ถ้าอยู่ในอันตรายตอนนี้ โทร 1784 (ปภ.) ได้ทันที"]
+    if need_consent:
+        lines += ["", CONSENT_PROMPT]
+        quick = _consent_quick()
+    return Reply("\n".join(lines), quick)
 
 
 def _shelters(conn, uid: int, t: str) -> Reply:
@@ -236,10 +365,13 @@ def _shelters(conn, uid: int, t: str) -> Reply:
     _, need_consent = _remember(conn, uid, t)
     prof = tools.get_user_profile(conn, uid)
     place = find_place(t)
+    if place and not place.amphoe:
+        return Reply(f"จ.{place.province} กว้างเกินไปค่ะ บอกอำเภอหรือตำบล หรือกดแชร์ตำแหน่ง "
+                     "แล้วจะหาศูนย์พักพิงที่ใกล้ที่สุดให้\nถ้าต้องการความช่วยเหลือด่วน โทร 1784 ได้ทันที", [LOCATION_Q])
     if place:
         lat, lon, label, approx = place.lat, place.lon, place.label, True
     elif prof["locations"]:
-        loc = next((l for l in prof["locations"] if l["label"] in t), prof["locations"][0])
+        loc = _saved_named(t, prof["locations"]) or prof["locations"][0]
         lat, lon, label = loc["lat"], loc["lon"], loc["label"]
         approx = _approx(loc)
     else:
@@ -262,8 +394,7 @@ def _shelters(conn, uid: int, t: str) -> Reply:
 def _on_location(conn, uid: int, location) -> Reply:
     lat, lon = location
     label = _save_shared(conn, uid, lat, lon)
-    text, sources = _assess(conn, uid, lat, lon, label, approx=False,
-                            extra=[f"📌 บันทึกตำแหน่งนี้เป็น \"{label}\" แล้ว จะแจ้งเตือนเมื่อน้ำสูงขึ้น"])
+    text, sources = _assess(conn, uid, lat, lon, label, approx=False, saved=label)
     return Reply(text, [PROFILE_Q], sources=sources,
                  place={"label": label, "lat": lat, "lon": lon, "approx": False, "saved_label": label})
 
@@ -340,17 +471,19 @@ def _place_words(t: str, locations: list[dict]) -> str | None:
     """Where the person is, in words 1784 can use: a place named in the message, else the first saved place
     (its district, or its coordinates when it was a GPS share)."""
     if place := find_place(t):
-        return place.label
+        return place.label + " (บอกบ้านเลขที่ หมู่บ้าน หรือจุดสังเกตเพิ่มด้วย)"
     if not locations:
         return None
     loc = locations[0]
     if _approx(loc):
-        return f"{loc['label']} ({loc['notes'].removeprefix(APPROX_NOTE)})"
+        return (f"{loc['label']} ({loc['notes'].removeprefix(APPROX_NOTE)}) เป็นตำแหน่งโดยประมาณ "
+                "บอกบ้านเลขที่ หมู่บ้าน หรือจุดสังเกตเพิ่มด้วย")
     return f"{loc['label']} (พิกัด {loc['lat']:.5f}, {loc['lon']:.5f})"
 
 
 def _emergency(conn, uid: int, t: str) -> Reply:
     """Danger: 1784 first, then what to tell them. NamMa sends nothing on the person's behalf, and says so."""
+    _clear_await(conn, uid)   # a half-finished "add a place" must not swallow the next location share
     _remember(conn, uid, t)   # parks sensitive facts; the call details below still use them, for this reply only
     prof = tools.get_user_profile(conn, uid)
     d = triage.call_details(t, memory.merged_view(prof["memory"], prof["pending"]))
@@ -391,11 +524,18 @@ def _profile(conn, uid: int) -> Reply:
 
 
 def _forget(conn, uid: int, t: str) -> Reply:
-    target = t[2:].strip()
+    target = " ".join(t[2:].split())
+    if not target:
+        return Reply("จะลบข้อมูลไหนคะ? ดูข้อมูลที่จำไว้และกดลบได้ที่ปุ่มด้านล่าง", [PROFILE_Q])
+    if target in ("ข้อมูลของฉัน", "ข้อมูล"):
+        return _profile(conn, uid)
     if target in ("ข้อมูลทั้งหมด", "ทั้งหมด"):
         tools.forget(conn, uid, "all")
         return Reply("ลบข้อมูลทั้งหมดแล้วค่ะ")
     if target == "ข้อมูลสุขภาพ":
+        prof = tools.get_user_profile(conn, uid)
+        if not (prof["memory"].get("household") or prof["memory"].get("needs") or prof["pending"]):
+            return Reply("ไม่มีข้อมูลสุขภาพที่บันทึกไว้ค่ะ", [PROFILE_Q])
         tools.forget(conn, uid, "household")
         tools.forget(conn, uid, "needs")
         return Reply("ลบข้อมูลสุขภาพและสมาชิกในบ้านแล้วค่ะ")

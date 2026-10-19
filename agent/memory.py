@@ -20,11 +20,21 @@ Return JSON only, with any of these keys (omit empty ones), or {} if nothing new
  "house": {"stories": int, "raised": true, "near_water": true},
  "assets": {"car": true, "motorbike": true, "ground_floor_shop": true},
  "history": {"past_floods": [short Thai text]}}
-Never infer: "my mother is 80" is NOT a health condition. Only what is literally stated."""
+Never infer: "my mother is 80" is NOT a health condition. Only what is literally stated.
+Not facts: negations ("ไม่มีคนติดเตียง"), other households ("เพื่อนบ้านมีคนติดเตียง"), hypotheticals ("ถ้า…"),
+and questions ("ที่ไหนรับคนติดเตียง")."""
+
+# What a sensitive or household word is NOT a fact about the person's own home after: a negation, another household,
+# or a shelter that takes such people ("รับคนติดเตียง"). "เดินไม่ได้" itself is a fact, so "ไม่ได้" after เดิน/ขยับ is not.
+_TERMS = (r"(ติดเตียง|เดินไม่ได้|นั่งรถเข็น|อัมพาต|ผู้สูงอายุ|คนแก่|คนชรา|เด็กเล็ก|ลูกเล็ก|ทารก|ลูกอ่อน|ตั้งครรภ์|"
+          r"ท้องแก่|คนท้อง|ฟอกไต|ล้างไต|ออกซิเจน|เครื่องช่วยหายใจ|กินยา|ยาประจำ|หมา|แมว|สุนัข|สัตว์เลี้ยง)")
+_NOT_OURS = re.compile(r"(ไม่มี|(?<!เดิน)(?<!ขยับ)(?<!ตัว)ไม่ได้|ไม่ใช่|เลิก|หายจาก|รับ|เพื่อนบ้าน|ข้างบ้าน|บ้านข้างๆ|"
+                       r"บ้านอื่น|เพื่อน)\S{0,8}?" + _TERMS)
+_HYPOTHETICAL = re.compile(r"ถ้า|หาก|สมมติ")
 
 
 def extract_rules(text: str) -> dict:
-    t = text.replace(" ", "")
+    t = _NOT_OURS.sub("", text.replace(" ", ""))
     hh, needs, house, assets, hist = {}, {}, {}, {}, {}
     who = [m.group(1) for m in re.finditer(WHO + r"\S{0,6}?" + IMMOBILE, t)]
     if who:
@@ -33,7 +43,7 @@ def extract_rules(text: str) -> dict:
         hh["immobile"] = ["สมาชิกในบ้าน"]
     if re.search(r"ผู้สูงอายุ|คนแก่|คนชรา", t):
         hh["elderly"] = True
-    if re.search(r"เด็กเล็ก|ลูกเล็ก|ทารก|ลูกอ่อน", t):
+    if re.search(r"เด็กเล็ก|ลูกเล็ก|ทารก|ลูกอ่อน", t) or any(int(n) <= 6 for n in re.findall(r"(\d+)ขวบ", t)):
         hh["children"] = True
     if re.search(r"ตั้งครรภ์|ท้องแก่|คนท้อง", t):
         hh["pregnant"] = True
@@ -54,23 +64,31 @@ def extract_rules(text: str) -> dict:
         house["stories"] = 2
     if "ใต้ถุนสูง" in t:
         house["raised"] = True
-    if re.search(r"ติดคลอง|ริมคลอง|ริมแม่น้ำ|ติดแม่น้ำ|ริมน้ำ", t):
+    if re.search(r"ติดคลอง|ริมคลอง|ใกล้คลอง|ริมแม่น้ำ|ติดแม่น้ำ|ใกล้แม่น้ำ|ริมน้ำ", t):
         house["near_water"] = True
     if re.search(r"มีรถยนต์|มีรถเก๋ง|มีรถกระบะ|มีรถ(?!มอ)", t):
         assets["car"] = True
     if re.search(r"มอเตอร์ไซค์|มอไซ|จักรยานยนต์", t):
         assets["motorbike"] = True
-    m = re.search(r"((?:ปี)?\s*(?:25)?54|2011)\S{0,10}ท่วม\S{0,15}", t)
-    if m and "ท่วม" in t:
+    m = re.search(r"((?:ปี)?\s*(?:25)?54|2011)\S{0,10}(ท่วม|น้ำเข้า)\S{0,15}", t)
+    if m:
         hist["past_floods"] = [m.group(0)]
-    return {k: v for k, v in zip(FIELDS, (hh, house, assets, needs, hist)) if v}
+    facts = {k: v for k, v in zip(FIELDS, (hh, house, assets, needs, hist)) if v}
+    return _drop_hypothetical(text, facts)
+
+
+def _drop_hypothetical(text: str, facts: dict) -> dict:
+    """"ถ้าน้ำท่วม แม่จะติดเตียง" states nothing about the household: keep no sensitive fact from an if-sentence."""
+    if _HYPOTHETICAL.search(text):
+        return {k: v for k, v in facts.items() if k not in SENSITIVE}
+    return facts
 
 
 def extract(text: str) -> dict:
     if llm.available():
         out = llm.chat_json(SYSTEM, text)
         if isinstance(out, dict):
-            return {k: v for k, v in out.items() if k in FIELDS and isinstance(v, dict) and v}
+            return _drop_hypothetical(text, {k: v for k, v in out.items() if k in FIELDS and isinstance(v, dict) and v})
     return extract_rules(text)
 
 

@@ -8,6 +8,7 @@ from agent.risk import TIER_TH, rank
 
 FOOTER = ("ℹ️ น้ำมาเป็นผู้ช่วยไม่เป็นทางการ โปรดติดตามประกาศและทำตามคำสั่งอพยพของทางการเสมอ\n"
           "☎️ สายด่วน ปภ. 1784 • LINE @1784DDPM")
+FAR_STATION_KM = 20     # beyond this, say the station may not reflect the place
 TIER_ICON = {"normal": "🟢", "watch": "🟡", "warning": "🟠", "danger": "🔴"}
 
 ADVICE_SYSTEM = """คุณคือ "น้ำมา" ผู้ช่วยเรื่องน้ำท่วม พูดภาษาไทย สุภาพ สงบ ตรงประเด็น
@@ -189,6 +190,9 @@ def risk_answer(place_label: str, approx: bool, stations: list[dict], shelters: 
     worst = max(stations, key=lambda s: rank(s["risk_tier"]))
     lines = [f"📍 {place_label}" + (" (ตำแหน่งโดยประมาณจากชื่อพื้นที่)" if approx else "")]
     lines += station_lines(main)
+    if main["distance_km"] > FAR_STATION_KM:
+        lines.append(f"⚠️ สถานีที่ใกล้ที่สุดอยู่ห่าง {main['distance_km']:.1f} กม. อาจไม่ตรงกับสถานการณ์ในพื้นที่ "
+                     "ใช้ประกอบกับประกาศของทางการในพื้นที่")
     if worst is not main and rank(worst["risk_tier"]) > rank(main["risk_tier"]):
         lines.append("")
         lines += station_lines(worst)
