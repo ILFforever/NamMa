@@ -16,6 +16,7 @@ router = APIRouter()
 MIN_STATIONS = 2
 AT_RISK = {"watch", "warning", "danger"}
 FALLBACK = 3          # rivers shown when nothing is at risk and no place is given: the best-gauged ones
+PLACE_FIELDS = ("province", "amphoe", "name_th", "oldcode", "basin")   # what a place search matches besides the river
 
 
 def _rivers(conn: psycopg.Connection, where: str = "TRUE", params=()) -> list[dict]:
@@ -67,8 +68,9 @@ def list_rivers(lat: float | None = Query(None, ge=-90, le=90),
                 q: str | None = Query(None, max_length=60),
                 limit: int = Query(6, ge=1, le=50),
                 conn: psycopg.Connection = Depends(get_db)):
-    """With q: rivers whose name contains q, best-gauged first. Otherwise: rivers at watch or worse (worst first,
-    then highest against its bank), then the river nearest lat/lon; if that is nothing, the best-gauged rivers."""
+    """With q: rivers whose name contains q, then rivers with a station whose province, amphoe, name, code or basin
+    contains q (each best-gauged first). Otherwise: rivers at watch or worse (worst first, then highest against
+    its bank), then the river nearest lat/lon; if that is nothing, the best-gauged rivers."""
     if (lat is None) != (lon is None):
         raise ApiError(400, "bad_request", "lat and lon must be given together")
     rivers = _rivers(conn)
@@ -76,9 +78,11 @@ def list_rivers(lat: float | None = Query(None, ge=-90, le=90),
 
     if q is not None and q.strip():
         needle = q.strip().casefold()
-        hits = sorted((r for r in rivers if needle in r["name_th"].casefold()),
-                      key=lambda r: (-len(r["_rows"]), r["key"]))
-        return envelope(conn, [_public(r, "match", near(r)) for r in hits[:limit]])
+        by_size = lambda r: (-len(r["_rows"]), r["key"])  # noqa: E731
+        named = sorted((r for r in rivers if needle in r["name_th"].casefold()), key=by_size)
+        placed = sorted((r for r in rivers if r not in named and any(
+            needle in str(s[f] or "").casefold() for s in r["_rows"] for f in PLACE_FIELDS)), key=by_size)
+        return envelope(conn, [_public(r, "match", near(r)) for r in (named + placed)[:limit]])
 
     at_risk = sorted((r for r in rivers if r["worst_tier"] in AT_RISK),
                      key=lambda r: (-TIERS.index(r["worst_tier"]), -(r["_over"] if r["_over"] is not None else -99),

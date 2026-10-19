@@ -69,7 +69,8 @@ A river lists each place once: where two stations gauge one place (< 3 km apart)
 for it. Only rivers with ≥ 2 such stations.
 
 ### `GET /api/rivers?lat=&lon=&q=&limit=6` → `River[]`
-- With `q`: rivers whose name contains `q`, most stations first. `reason: "match"`.
+- With `q`: rivers whose name contains `q`, most stations first; then rivers with a station whose province, amphoe,
+  name or code contains `q` (or whose basin does), most stations first. `reason: "match"` for both.
 - Otherwise: rivers with a station at watch or worse, worst tier first, then highest against its bank (≤ `limit`,
   `reason: "at_risk"`); then, given `lat`/`lon`, the river with the station nearest that point if not already listed
   (`"near_you"`). If that is nothing: the three best-gauged rivers (`"largest"`).

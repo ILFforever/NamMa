@@ -85,6 +85,17 @@ def test_search_by_name(api):
     assert client.get("/api/rivers", params={"q": "ไม่มี"}).json()["data"] == []
 
 
+def test_search_also_finds_rivers_through_a_place(api):
+    client, conn = api
+    _seed(conn)
+    by_province = client.get("/api/rivers", params={"q": "พระนครศรีอยุธยา"}).json()["data"]
+    assert [(d["key"], d["reason"]) for d in by_province] == [("แม่น้ำเจ้าพระยา", "match")]
+    # A river-name hit comes before a place hit: "ยม" names the Yom, and no place carries it.
+    by_code = client.get("/api/rivers", params={"q": "s21"}).json()["data"]
+    assert [d["key"] for d in by_code] == ["แม่น้ำมูล"]
+    assert client.get("/api/rivers", params={"q": "ไม่มีที่นี่"}).json()["data"] == []
+
+
 def test_lat_without_lon_is_rejected(api):
     client, _ = api
     r = client.get("/api/rivers", params={"lat": 14})
