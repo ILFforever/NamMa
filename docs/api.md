@@ -121,6 +121,23 @@ cells within `radius_km`. Before the first download the layer fields are null an
   "at_point": false, "nearest_km": 0.8, "radius_km": 5.0, "nearby": { "cells": 96, "area_km2": 7.9, "area_rai": 4938 } }
 ```
 
+### `GET /api/flood/history?level=province|tambon&province=` → `FloodHistory`
+
+Our copy of GISTDA's flood history (`ingest/gistda_history.py`, one row per sub-district), for the flood map's
+history layer. `level=province` sums sub-districts per province; `level=tambon` needs `province` (pv code) and
+lists its sub-districts. Codes are GISTDA's `pv_idn` / `tb_idn`, the same as the map outlines' `code`.
+
+```
+{ level, province, years: number[],          // every year the copy covers, e.g. 2011…2024
+  provinces: string[],                       // pv codes copied so far
+  areas: [{ code, province, amphoe, tambon,  // amphoe/tambon null at province level
+            years: number[],                 // years with any flooding
+            rai_by_year: { "2011": 3824.8 } }],  // GISTDA's own shape areas, summed; only flooded years
+  source: "GISTDA" }
+```
+Sorted by the worst year's rai. An area missing from `areas` in a copied province never flooded in these years;
+in a province not in `provinces` it is not known yet.
+
 ## Chat
 
 ### `POST /api/chat` → `ChatResponse`
