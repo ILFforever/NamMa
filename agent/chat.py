@@ -4,6 +4,7 @@ Flow (CLAUDE.md §6, manual tool flow so it works with or without MaaS function 
 classify intent in code → call tools → template facts (+ optional LLM advice) → reply.
 """
 import re
+import time
 from dataclasses import dataclass, field
 
 from agent import answer, memory, tools, triage
@@ -42,6 +43,8 @@ class Reply:
     ticket_id: int | None = None
     sources: list[dict] = field(default_factory=list)   # docs/api.md Source objects (used by the web API)
     emergency: bool = False                             # danger signalled, or a ticket was created/confirmed
+    place: dict | None = None                           # {label, lat, lon, approx, saved_label}: lets LINE show a map pin + card
+    extra: list[str] = field(default_factory=list)      # notes already inside text that the LINE card does not repeat
 
 
 def _q(label, text=None):
@@ -50,6 +53,11 @@ def _q(label, text=None):
 
 LOCATION_Q = QuickReply("แชร์ตำแหน่ง", kind="location")
 PROFILE_Q = _q("ข้อมูลที่จำไว้", "ข้อมูลอะไรที่จำเกี่ยวกับฉัน")
+SET_HOME = "ตั้งตำแหน่งบ้าน"            # profile quick replies: edit the home, add another place, add household facts
+ADD_PLACE = "เพิ่มสถานที่"
+ADD_FACTS = "เพิ่มข้อมูลครอบครัว"
+AWAIT_TTL = 15 * 60                      # a half-finished "add a place" is forgotten after 15 minutes
+HOME = "บ้าน"
 
 
 def handle(conn, external_id: str | None, channel: str, text: str | None = None,
@@ -109,6 +117,12 @@ def _route(conn, uid: int, text: str, location, channel: str = "line") -> Reply:
         return _cancel(conn, uid)
     if location:
         return _on_location(conn, uid, location)
+    if t in (SET_HOME, ADD_PLACE, ADD_FACTS):
+        return _start_edit(conn, uid, t)
+    if (step := _awaiting(conn, uid)) and step["step"] == "name" and 0 < len(t) <= 30 and not triage.is_danger(t):
+        return _got_place_name(conn, uid, t)
+    if t == HOME:
+        return _home(conn, uid)
     if triage.is_danger(t):
         return _rescue(conn, uid, t, channel)
     if re.search(r"จำอะไร|ข้อมูลอะไรที่จำ|ข้อมูลของฉัน|โปรไฟล์", t):
@@ -213,7 +227,10 @@ def _talk(conn, uid: int, t: str) -> Reply:
             extra.append(CONSENT_PROMPT)
             quick = _consent_quick()
         text, sources = _assess(conn, uid, target[0], target[1], target[2], target[3], extra)
-        return Reply(text, quick, sources=sources)
+        place_info = {"label": target[2], "lat": target[0], "lon": target[1], "approx": target[3],
+                      "saved_label": label if label and place else None}
+        return Reply(text, quick, sources=sources, place=place_info,
+                     extra=[e for e in extra if not e.startswith("📌")])
 
     if facts:
         lines = memory.describe(facts)
@@ -265,12 +282,74 @@ def _on_location(conn, uid: int, location) -> Reply:
         tools.update_ticket(conn, tid, lat=lat, lon=lon, status="open" if status == "unconfirmed" else status)
         return Reply(f"📍 ได้รับตำแหน่งแล้ว ส่งคำขอ #{tid} พร้อมพิกัดถึงทีมช่วยเหลือแล้ว\n"
                      "☎️ โทร 1784 ซ้ำได้ถ้าสถานการณ์แย่ลง", ticket_id=tid, emergency=True)
-    prof = tools.get_user_profile(conn, uid)
-    label = "บ้าน" if not prof["locations"] else "ตำแหน่งที่แชร์"
-    tools.save_location(conn, uid, label, lat, lon)
+    label = _save_shared(conn, uid, lat, lon)
     text, sources = _assess(conn, uid, lat, lon, label, approx=False,
                             extra=[f"📌 บันทึกตำแหน่งนี้เป็น \"{label}\" แล้ว จะแจ้งเตือนเมื่อน้ำสูงขึ้น"])
-    return Reply(text, [PROFILE_Q], sources=sources)
+    return Reply(text, [PROFILE_Q], sources=sources,
+                 place={"label": label, "lat": lat, "lon": lon, "approx": False, "saved_label": label})
+
+
+def _awaiting(conn, uid: int) -> dict | None:
+    """The half-finished profile edit ({step: 'name'|'loc', label}), if it is still fresh."""
+    a = (tools.get_user_profile(conn, uid)["memory"].get("preferences") or {}).get("_await")
+    return a if a and time.time() - a.get("ts", 0) < AWAIT_TTL else None
+
+
+def _set_await(conn, uid: int, step: str, label: str | None = None) -> None:
+    tools.merge_memory(conn, uid, {"preferences": {"_await": {"step": step, "label": label, "ts": time.time()}}})
+
+
+def _clear_await(conn, uid: int) -> None:
+    conn.execute("UPDATE user_memory SET preferences = preferences - '_await' WHERE user_id = %s", (uid,))
+
+
+def _save_shared(conn, uid: int, lat: float, lon: float) -> str:
+    """Save a shared GPS fix and return the label it was saved under: the name being added or edited if there is
+    one, else "บ้าน" when there is no home yet, else "ตำแหน่งที่แชร์"."""
+    a = _awaiting(conn, uid)
+    prof = tools.get_user_profile(conn, uid)
+    if a and a["step"] == "loc" and a.get("label"):
+        label = a["label"]
+    elif not any(l["label"] == HOME for l in prof["locations"]):
+        label = HOME
+    else:
+        label = "ตำแหน่งที่แชร์"
+    tools.save_location(conn, uid, label, lat, lon)
+    _clear_await(conn, uid)
+    return label
+
+
+def _start_edit(conn, uid: int, t: str) -> Reply:
+    if t == SET_HOME:
+        _set_await(conn, uid, "loc", HOME)
+        return Reply("📍 กดแชร์ตำแหน่งที่บ้านใหม่ได้เลยค่ะ น้ำมาจะบันทึกเป็น \"บ้าน\" แทนที่ตำแหน่งเดิม\n"
+                     "หรือพิมพ์ชื่อพื้นที่ เช่น \"บ้านอยู่บางบาล อยุธยา\"", [LOCATION_Q])
+    if t == ADD_PLACE:
+        _set_await(conn, uid, "name")
+        return Reply("ตั้งชื่อสถานที่ว่าอะไรดีคะ เช่น บ้านแม่ ที่ทำงาน ร้านค้า (พิมพ์ชื่อได้เลย)")
+    return Reply("บอกได้เลยค่ะ น้ำมาจะบันทึกให้ เช่น\n"
+                 "• \"ที่บ้านมีผู้สูงอายุ\" • \"มีสุนัข 2 ตัว\" • \"บ้านสองชั้น ใต้ถุนสูง\" • \"มีรถยนต์\"\n"
+                 "ข้อมูลสุขภาพ (เช่น ติดเตียง ฟอกไต) จะขออนุญาตก่อนบันทึกทุกครั้ง\n"
+                 "ถ้าต้องการแก้ข้อมูลเดิม ให้กด \"ลบ ...\" แล้วบอกใหม่ค่ะ", [PROFILE_Q])
+
+
+def _got_place_name(conn, uid: int, name: str) -> Reply:
+    _set_await(conn, uid, "loc", name)
+    return Reply(f"📍 กดแชร์ตำแหน่งของ \"{name}\" ได้เลยค่ะ", [LOCATION_Q])
+
+
+def _home(conn, uid: int) -> Reply:
+    """A bare "บ้าน": assess the saved home, or start saving one."""
+    prof = tools.get_user_profile(conn, uid)
+    loc = next((l for l in prof["locations"] if l["label"] == HOME), None)
+    if not loc:
+        _set_await(conn, uid, "loc", HOME)
+        return Reply("ยังไม่ได้บันทึก \"บ้าน\" ค่ะ กดแชร์ตำแหน่งที่บ้านได้เลย "
+                     "น้ำมาจะบันทึกไว้และแจ้งเตือนเมื่อน้ำสูงขึ้น", [LOCATION_Q])
+    approx = bool(loc["notes"] and loc["notes"].startswith("ประมาณ"))
+    text, sources = _assess(conn, uid, loc["lat"], loc["lon"], HOME, approx, [])
+    return Reply(text, [LOCATION_Q, PROFILE_Q], sources=sources,
+                 place={"label": HOME, "lat": loc["lat"], "lon": loc["lon"], "approx": approx, "saved_label": None})
 
 
 def _rescue(conn, uid: int, t: str, channel: str = "line") -> Reply:
@@ -333,15 +412,19 @@ def _cancel(conn, uid: int) -> Reply:
 def _profile(conn, uid: int) -> Reply:
     prof = tools.get_user_profile(conn, uid)
     lines = memory.describe(prof["memory"])
-    locs = [f"📌 {l['label']}" for l in prof["locations"]]
+    locs = [f"📍 {l['label']}" for l in prof["locations"]]
     if not lines and not locs:
-        return Reply("ตอนนี้ยังไม่ได้จำข้อมูลอะไรเกี่ยวกับคุณค่ะ")
-    text = "ข้อมูลที่น้ำมาจำไว้:\n" + "\n".join(locs + [f"• {x}" for x in lines])
-    quick = [_q(f"ลบ {l['label']}") for l in prof["locations"][:5]]
+        head = "ตอนนี้ยังไม่ได้จำข้อมูลอะไรเกี่ยวกับคุณค่ะ"
+    else:
+        head = "ข้อมูลที่น้ำมาจำไว้:\n" + "\n".join(locs + [f"• {x}" for x in lines])
+    text = head + "\n\nเพิ่มหรือแก้ไขได้ค่ะ: กดปุ่มด้านล่าง หรือพิมพ์ เช่น \"บ้านแม่อยู่บางระกำ พิษณุโลก\""
+    quick = [_q("📍 ตั้งตำแหน่งบ้าน", SET_HOME), _q("➕ เพิ่มสถานที่", ADD_PLACE), _q("➕ ข้อมูลครอบครัว", ADD_FACTS)]
+    quick += [_q(f"ลบ {l['label']}") for l in prof["locations"][:4]]
     if prof["memory"].get("household") or prof["memory"].get("needs"):
         quick.append(_q("ลบข้อมูลสุขภาพ"))
-    quick.append(_q("ลบข้อมูลทั้งหมด"))
-    return Reply(text, quick)
+    if lines or locs:
+        quick.append(_q("ลบข้อมูลทั้งหมด"))
+    return Reply(text, quick[:13])
 
 
 def _forget(conn, uid: int, t: str) -> Reply:

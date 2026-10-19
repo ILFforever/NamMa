@@ -22,17 +22,22 @@ def verify_signature(body: bytes, signature: str | None) -> bool:
     return hmac.compare_digest(base64.b64encode(mac).decode(), signature)
 
 
-def text_message(text: str, quick: list | None = None) -> dict:
+def quick_reply(quick: list | None) -> dict | None:
     """quick: agent.chat.QuickReply list. LINE allows 13 items."""
-    msg = {"type": "text", "text": text[:MAX_TEXT]}
     items = []
     for q in (quick or [])[:13]:
         if q.kind == "location":
             items.append({"type": "action", "action": {"type": "location", "label": q.label[:20]}})
         else:
             items.append({"type": "action", "action": {"type": "message", "label": q.label[:20], "text": q.text[:300]}})
-    if items:
-        msg["quickReply"] = {"items": items}
+    return {"items": items} if items else None
+
+
+def text_message(text: str, quick: list | None = None) -> dict:
+    msg = {"type": "text", "text": text[:MAX_TEXT]}
+    qr = quick_reply(quick)
+    if qr:
+        msg["quickReply"] = qr
     return msg
 
 

@@ -179,3 +179,52 @@ def test_web_replies_drop_hotline_copies_and_emoji_line_keeps_them(conn):
     # No station source → no HotlineNotice on the web, so the footer text stays (emoji removed)
     help_ = chat.handle(conn, "web:s1", "web", text="สวัสดี")
     assert "1784" in help_.text and not chat._EMOJI.search(help_.text)
+
+
+def _locs(conn, uid):
+    return {l["label"]: (l["lat"], l["lon"]) for l in tools.get_user_profile(conn, uid)["locations"]}
+
+
+def test_shared_location_is_saved_as_home_and_profile_can_edit(conn):
+    risk.compute_all(conn, NOW)
+    r = chat.handle(conn, "U-home", "line", location=(14.41, 100.46))
+    uid = tools.get_or_create_user(conn, "U-home", None)
+    assert _locs(conn, uid) == {chat.HOME: (14.41, 100.46)}
+    assert r.place["saved_label"] == chat.HOME and r.place["lat"] == 14.41
+    # the profile view is always editable
+    p = chat.handle(conn, "U-home", "line", text="ข้อมูลของฉัน")
+    assert {chat.SET_HOME, chat.ADD_PLACE, chat.ADD_FACTS} <= {q.text for q in p.quick}
+    assert chat.HOME in p.text
+    # edit the home: the next share replaces it, still one home
+    s = chat.handle(conn, "U-home", "line", text=chat.SET_HOME)
+    assert any(q.kind == "location" for q in s.quick)
+    chat.handle(conn, "U-home", "line", location=(14.5, 100.5))
+    assert _locs(conn, uid) == {chat.HOME: (14.5, 100.5)}
+    # add another place: name first, then the location
+    chat.handle(conn, "U-home", "line", text=chat.ADD_PLACE)
+    n = chat.handle(conn, "U-home", "line", text="บ้านแม่")
+    assert "บ้านแม่" in n.text and any(q.kind == "location" for q in n.quick)
+    chat.handle(conn, "U-home", "line", location=(15.0, 100.0))
+    assert _locs(conn, uid) == {chat.HOME: (14.5, 100.5), "บ้านแม่": (15.0, 100.0)}
+    # a later share with no pending edit does not overwrite the home
+    chat.handle(conn, "U-home", "line", location=(13.0, 100.0))
+    assert _locs(conn, uid)[chat.HOME] == (14.5, 100.5) and "ตำแหน่งที่แชร์" in _locs(conn, uid)
+
+
+def test_empty_profile_offers_to_add_and_bare_home_starts_saving(conn):
+    risk.compute_all(conn, NOW)
+    p = chat.handle(conn, "U-new", "line", text="ข้อมูลของฉัน")
+    assert "ยังไม่ได้จำ" in p.text and chat.SET_HOME in [q.text for q in p.quick]
+    b = chat.handle(conn, "U-new", "line", text="บ้าน")
+    assert any(q.kind == "location" for q in b.quick)
+    chat.handle(conn, "U-new", "line", location=(14.41, 100.46))
+    uid = tools.get_or_create_user(conn, "U-new", None)
+    assert _locs(conn, uid) == {chat.HOME: (14.41, 100.46)}
+    again = chat.handle(conn, "U-new", "line", text="บ้าน")      # now it assesses the saved home
+    assert again.place and again.place["label"] == chat.HOME
+
+
+def test_rescue_words_are_not_taken_as_a_place_name(conn):
+    chat.handle(conn, "U-safe", "line", text=chat.ADD_PLACE)
+    r = chat.handle(conn, "U-safe", "line", text="ช่วยด้วย")
+    assert r.emergency and r.ticket_id
