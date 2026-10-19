@@ -31,7 +31,9 @@ Two repos in the **NamMa-CEDT** org: `namma-backend` (this one) and `namma-web`.
 
 | Priority | What | Who | Blocked by |
 |---|---|---|---|
-| 🔴 | LINE channel → keys in `.env` | Owner | — |
+| ✅ | LINE channel → keys in `.env` (bot NamMA, @753kmkri; token verified 2026-10-18) | Owner | — |
+| 🔴 | Database for the first real LINE test (no Docker/Postgres on the owner's PC; suggested Neon), then cloudflared tunnel + webhook URL | Owner + dev | DB choice |
+| 🟠 | LINE hardening: push to responders on confirmed ticket, handle unfollow/push errors, reply to non-text events, dedupe redelivered events, fallback push when reply fails | Dev | — |
 | 🔴 | Create the ECS VM (`infra/huawei/README.md`), then run `infra/deploy/README.md` | Owner + dev | Credit approval |
 | 🔴 | Point the LINE webhook at the VM; test the bot for real | Owner + dev | VM + LINE keys |
 | 🔴 | Before the site is public: `DEMO_MODE=0`, no `VITE_DEMO_LOGIN`, set `RESPONDER_LINE_IDS` | Dev | VM |
