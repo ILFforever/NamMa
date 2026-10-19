@@ -134,8 +134,9 @@ Request: `{ session_id, message? | postback? | location?: { lat, lon } }`. Exact
   - `flood_extent`, from the stored 3-day layer (7-day when the 3-day one is empty): at a GPS point, flooded or not and
     the nearest flooded cell; around a place found by name (a district centre), the flooded area within 5 km.
     `observed_at` is the layer's newest GISTDA date, else when it was downloaded.
-  - `flood_recurrence`: the years the subdistrict flooded, 2011–2023 (live GISTDA query). `observed_at` null.
-  - Neither appears before the first layer is downloaded or without `GISTDA_API_KEY`.
+  - `flood_recurrence`: the years the subdistrict flooded, 2011–2023. `observed_at` null. **Not sent for now:** GISTDA's
+    point query is dead, so this returns once our own copy of the flood history is in the database.
+  - `flood_extent` does not appear before the first layer is downloaded or without `GISTDA_API_KEY`.
 - **Quick replies mirror LINE quick-reply actions** (`message` / `postback` / `location`). The same agent handler can serve the LINE webhook and the web.
 - **Postback data the web sends today** (anything else is 400):
   - `consent:sensitive_memory:yes|no` → write `consents`

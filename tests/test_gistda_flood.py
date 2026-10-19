@@ -86,13 +86,10 @@ def test_finish_dedupes_converts_and_caps_at_the_cell():
         [0.5, 0.5, 0.5, 1.0, 1.0, 1.0, 1.0]
 
 
-def test_parse_recurrence():
-    data = [{"subdistrict_name": "บางหลวงโดด", "district_name": "บางบาล", "province_name": "พระนครศรีอยุธยา",
-             "total": 3, "detail": [{"year": 2011, "freq": 1}, {"year": 2012, "freq": 0}, {"year": "2017", "freq": 2}]}]
-    assert gistda.parse_recurrence(data) == {"tambon": "บางหลวงโดด", "amphoe": "บางบาล", "province": "พระนครศรีอยุธยา",
-                                             "years": [2011, 2017], "source": "GISTDA (2011–2023)"}
-    assert gistda.parse_recurrence({"result": "not found"}) is None
-    assert gistda.parse_recurrence([{"detail": []}]) is None
+def test_recurrence_makes_no_call(monkeypatch):
+    monkeypatch.setenv("GISTDA_API_KEY", KEY)
+    monkeypatch.setattr(httpx, "get", lambda *a, **k: pytest.fail("chat must not call GISTDA for recurrence"))
+    assert gistda.get_flood_recurrence(*BANG_BAN) is None
 
 
 # --- fetching --------------------------------------------------------------------------------------
