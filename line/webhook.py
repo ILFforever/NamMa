@@ -22,9 +22,11 @@ FALLBACK = ("ขออภัย ระบบขัดข้องชั่วค
 def _handle_event(ev: dict) -> None:
     src = (ev.get("source") or {}).get("userId")
     token = ev.get("replyToken")
-    if not src or not token:
-        return
     msg = ev.get("message") or {}
+    if not src or not token:
+        print(f"LINE {ev.get('type')}/{msg.get('type', '-')} skipped: user={bool(src)} token={bool(token)} "
+              f"mode={ev.get('mode')} redelivery={(ev.get('deliveryContext') or {}).get('isRedelivery')}", flush=True)
+        return
     t0 = time.monotonic()
     try:
         with connect() as conn:
@@ -35,6 +37,7 @@ def _handle_event(ev: dict) -> None:
             elif ev["type"] == "message" and msg.get("type") == "location":
                 r = chat.handle(conn, src, "line", location=(msg["latitude"], msg["longitude"]))
             else:
+                print(f"LINE {ev['type']}/{msg.get('type', '-')} skipped: unsupported", flush=True)
                 return
     except Exception as e:
         # Never leave someone who may be in danger with no answer.
