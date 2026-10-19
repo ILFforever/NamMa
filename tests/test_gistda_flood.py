@@ -65,6 +65,26 @@ def test_parse_feature_dates_and_explicit_units():
     assert gf._when("not a date") is None
 
 
+def test_parse_feature_reads_gistdas_real_shape():
+    """Properties as GISTDA sent them on 2026-10-19 (flood/3days, first feature; ids shortened)."""
+    cell = "8964a493227ffff"
+    real = {"_area": 1259.5259331933048, "_createdAt": "2026-10-19T10:58:21.799Z", "_id": "6ad5f7cd",
+            "ap_en": "AMPHOE MUEANG CHACHOENGSAO", "ap_idn": 2401, "ap_tn": "อ.เมืองฉะเชิงเทรา", "building": 0,
+            "f_area": 1259.5259331933048, "file_name": "cm2_20261017_1710, cm2_20261018_0607, cm4_20261019_0627",
+            "h3_address": cell, "h3_area": 124552.40640633086, "hospital": 0, "length_road": 0, "mongo_id": "6ad5f3b6",
+            "population": 169.55, "pv_en": "Changwat Chachoengsao", "pv_idn": 24, "pv_tn": "จ.ฉะเชิงเทรา",
+            "re_royin": "East", "rice_area": 9.18, "school": 0, "tb_en": "BANG KAHAI", "tb_idn": 240114,
+            "tb_tn": "ต.บางกระไห"}
+    c = gf.parse_feature(_feature(cell, with_id=False, **real))
+    assert c["h3"] == cell and (c["raw_area"], c["area_unit"]) == (1259.5259331933048, "m2")   # f_area, not h3_area
+    assert (c["province"], c["amphoe"], c["tambon"]) == ("ฉะเชิงเทรา", "เมืองฉะเชิงเทรา", "บางกระไห")
+    assert (c["pv_code"], c["ap_code"], c["tb_code"]) == ("24", "2401", "240114")
+    assert c["observed_at"] == datetime(2026, 10, 19, 6, 27, tzinfo=gf.BKK)                    # newest scene
+    assert (c["buildings"], c["population"], c["schools"], c["hospitals"]) == (0, 169.55, 0, 0)
+    [row], unit = gf.finish([c])
+    assert row["area_km2"] == pytest.approx(0.00126, abs=1e-5) and unit == "cell"              # ~1% of the cell
+
+
 @pytest.mark.parametrize("scale, unit", [(1.0, "km2"), (625.0, "rai"), (1e6, "m2"), (1e9, "cell")])
 def test_area_unit_is_judged_over_the_whole_layer(scale, unit):
     cells = sorted(h3.grid_disk(h3.latlng_to_cell(*BANG_BAN, 9), 1))
