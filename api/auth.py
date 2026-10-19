@@ -1,8 +1,8 @@
-"""Accounts and web login (docs/api.md → Auth): LINE or Google ID token → session token; responder role.
+"""Accounts and web login (docs/api.md → Auth): LINE or Google ID token → session token.
 
 One account per person. It can sign in with LINE, with Google, or both linked (user_identities). Web and the LINE OA
-share one users row (same LINE userId), so a responder's LINE account is their login. Signing in folds the
-browser's anonymous web chat (its places and memory) into the account.
+share one users row (same LINE userId), so a LINE OA chatter's places and memory are there when they sign in on the
+web. Signing in folds the browser's anonymous web chat (its places and memory) into the account.
 """
 import hashlib
 import os
@@ -43,7 +43,7 @@ def current_user(authorization: str | None = Header(None), conn: psycopg.Connect
     if not authorization.startswith("Bearer "):
         raise ApiError(401, "invalid_token", "expected 'Authorization: Bearer <token>'")
     row = conn.execute(
-        "SELECT u.id, u.line_user_id, u.display_name, u.role, u.picture_url FROM sessions s "
+        "SELECT u.id, u.line_user_id, u.display_name, u.picture_url FROM sessions s "
         "JOIN users u ON u.id = s.user_id WHERE s.token_hash = %s AND s.expires_at > now()",
         (_hash(authorization.removeprefix("Bearer ").strip()),)).fetchone()
     if not row:
@@ -55,17 +55,6 @@ def require_user(user: dict | None = Depends(current_user)) -> dict:
     if user is None:
         raise ApiError(401, "unauthorized", "sign in first")
     return user
-
-
-def require_responder(user: dict = Depends(require_user)) -> dict:
-    """Rescue tickets are PDPA-sensitive: responders only. The static bundle is public, so this is the guard."""
-    if user["role"] != "responder":
-        raise ApiError(403, "forbidden", "responder role required")
-    return user
-
-
-def _responder_allowlist() -> set[str]:
-    return {x.strip() for x in os.environ.get("RESPONDER_LINE_IDS", "").split(",") if x.strip()}
 
 
 def _verify_line(id_token: str) -> dict:
@@ -102,19 +91,17 @@ DEMO_NAME = re.compile(r"[a-z0-9_-]{1,40}")
 
 
 def _line_claims(id_token: str) -> dict:
-    """{sub, name, picture, role}. Demo tokens: 'demo:user', 'demo:responder', 'demo:user:<name>' (one account per
-    name, so testers don't share memory)."""
+    """{sub, name, picture}. Demo tokens: 'demo:user', 'demo:user:<name>' (one account per name, so testers don't
+    share memory)."""
     if id_token.startswith("demo:"):
         parts = id_token.split(":")
-        if not DEMO or parts[1:2] not in (["user"], ["responder"]) or len(parts) > 3 or \
+        if not DEMO or parts[1:2] != ["user"] or len(parts) > 3 or \
                 (len(parts) == 3 and not DEMO_NAME.fullmatch(parts[2])):
             raise ApiError(401, "invalid_token", "demo login is off or the demo token is malformed")
-        role = parts[1]
-        name = parts[2] if len(parts) == 3 else ("เจ้าหน้าที่ทดลอง" if role == "responder" else "ผู้ใช้ทดลอง")
-        return {"sub": id_token, "name": name, "picture": None, "role": role}
+        name = parts[2] if len(parts) == 3 else "ผู้ใช้ทดลอง"
+        return {"sub": id_token, "name": name, "picture": None}
     claims = _verify_line(id_token)
-    return {"sub": claims["sub"], "name": claims.get("name"), "picture": claims.get("picture"),
-            "role": "responder" if claims["sub"] in _responder_allowlist() else None}
+    return {"sub": claims["sub"], "name": claims.get("name"), "picture": claims.get("picture")}
 
 
 def _google_claims(id_token: str) -> dict:
@@ -132,14 +119,14 @@ def _google_claims(id_token: str) -> dict:
 
 
 def _user_row(conn: psycopg.Connection, user_id: int) -> dict:
-    return conn.execute("SELECT id, line_user_id, display_name, role, picture_url FROM users WHERE id = %s",
+    return conn.execute("SELECT id, line_user_id, display_name, picture_url FROM users WHERE id = %s",
                         (user_id,)).fetchone()
 
 
 def _user_out(conn: psycopg.Connection, u: dict) -> dict:
     google = conn.execute("SELECT email FROM user_identities WHERE user_id = %s AND provider = 'google'",
                           (u["id"],)).fetchone()
-    return {"display_name": u["display_name"], "role": u["role"], "picture_url": u["picture_url"],
+    return {"display_name": u["display_name"], "picture_url": u["picture_url"],
             "identities": {"line": tools.is_line_id(u["line_user_id"]),
                            "google": google["email"] if google else None}}
 
@@ -167,11 +154,10 @@ class LoginIn(BaseModel):
 def _line_user(conn: psycopg.Connection, c: dict) -> int:
     """The account with this LINE id, created on first sign-in (LINE OA chatters already have one)."""
     return conn.execute(
-        "INSERT INTO users (line_user_id, display_name, picture_url, role) VALUES (%s, %s, %s, coalesce(%s, 'user')) "
+        "INSERT INTO users (line_user_id, display_name, picture_url) VALUES (%s, %s, %s) "
         "ON CONFLICT (line_user_id) DO UPDATE SET display_name = coalesce(EXCLUDED.display_name, users.display_name), "
-        "picture_url = coalesce(EXCLUDED.picture_url, users.picture_url), "
-        "role = CASE WHEN %s::text IS NULL THEN users.role ELSE %s::text END RETURNING id",
-        (c["sub"], c["name"], c["picture"], c["role"], c["role"], c["role"])).fetchone()["id"]
+        "picture_url = coalesce(EXCLUDED.picture_url, users.picture_url) RETURNING id",
+        (c["sub"], c["name"], c["picture"])).fetchone()["id"]
 
 
 def _google_user(conn: psycopg.Connection, c: dict) -> int:
@@ -276,7 +262,6 @@ def me(user: dict = Depends(require_user), conn: psycopg.Connection = Depends(ge
 
 @router.delete("/api/me")
 def delete_me(user: dict = Depends(require_user), conn: psycopg.Connection = Depends(get_db)):
-    """PDPA erasure: the account, its sign-ins, sessions, places, memory, consents and messages. Rescue tickets
-    stay for the responders' record, no longer linked to the person."""
+    """PDPA erasure: the account, its sign-ins, sessions, places, memory, consents and messages."""
     tools.delete_user(conn, user["id"])
     return envelope(conn, {"deleted": True})

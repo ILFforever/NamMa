@@ -73,37 +73,40 @@ Both come from `station_edges` and are empty for stations without edges (all HII
 - `patients`/`pets` filter to shelters that accept them. `limit` 1–500 (default 50).
 - With lat/lon the list is the nearest `limit`, sorted by distance; without them `distance_km` is null.
 
-## Rescue tickets (responder role only)
+## Flood (GISTDA satellite)
 
-401 without a session, 403 for non-responders. **Access control is the backend's job**: the static bundle is public, so hiding the route protects nothing.
+GISTDA's flooded H3 cells (res 9, ~0.1 km² each) from the latest **3-day** and **7-day** satellite layers, stored by
+`ingest/gistda_flood.py` (every 3 h when `GISTDA_API_KEY` is set). Credit GISTDA (สทอภ.) in the UI. Every number is
+a count or sum of GISTDA's cells: `area_km2` is GISTDA's flooded area in the cell (the whole cell when it gives none),
+`area_rai` = km² × 625, rounded. `period` is `3days` (default) or `7days`; anything else is 400.
 
-### `GET /api/tickets?status=open,acknowledged&since=<ts>` → `TicketSummary[]`
-The list view deliberately **omits `raw_text`, `contact_phone`, `assignee`, `notes`** (PDPA: show the minimum).
-- `status` is comma-separated.
-- `since` returns tickets with `updated_at > since`.
-- The client polls every 5 s and sorts by urgency, then age.
+Both answers carry the layer: `{ period, fetched_at, observed_from, observed_to }`. `fetched_at` is when we downloaded
+it; `observed_*` is the range of dates GISTDA gives its cells. All three are **null before the first download**: show
+"no data yet", never "no flooding". A downloaded layer with no cells is a real "nothing detected".
+
+### `GET /api/flood/areas?period=3days&level=province&province=&amphoe=&limit=100` → `FloodAreas`
+Flooded area per area, largest first, and the total over the same filter.
+- `level`: `province | amphoe | tambon`. `province` / `amphoe` filter by name (no จ./อ. prefix) or GISTDA code.
+- `limit` 1–1000. `lat`/`lon` is the area-weighted centre of the area's cells (to fly the map there).
+- An area GISTDA names only by code has `null` names and its `code` (`pv_idn` / `ap_idn` / `tb_idn`).
 
 ```jsonc
-{ "id": 1047, "place_label": "อ.บางบาล จ.พระนครศรีอยุธยา", "lat": 14.369, "lon": 100.474,
-  "people_count": null, "vulnerable": ["elderly", "bedridden"], "needs": ["evacuation"],
-  "urgency": "critical", "status": "open", "channel": "web",
-  "created_at": "…", "updated_at": "…" }
+{ "period": "3days", "fetched_at": "…", "observed_from": "…", "observed_to": "…", "level": "amphoe",
+  "total": { "cells": 1180, "area_km2": 121.4, "area_rai": 75875 },
+  "areas": [ { "province": "พระนครศรีอยุธยา", "amphoe": "บางบาล", "tambon": null, "code": "1405",
+               "cells": 412, "area_km2": 44.1, "area_rai": 27563, "lat": 14.38, "lon": 100.47 } ] }
 ```
 
-### `GET /api/tickets/{id}` → `RescueTicket`
-The summary plus `raw_text`, `contact_phone`, `assignee`, `notes`.
+### `GET /api/flood/cells?bbox=minLon,minLat,maxLon,maxLat&period=3days&res=9&limit=5000` → `FloodCells`
+The flooded cells in the map's view, largest first. The web draws them with h3-js (`cellToBoundary`).
+- `res` 9 = GISTDA's own cells, with `province`, `amphoe`, `tambon`, `observed_at`. `res` 5–8 sums them into parent
+  cells for a zoomed-out map (`cells` = how many res-9 cells). `share` = flooded part of the cell, 0–1.
+- `limit` 1–20000; `truncated: true` when the view holds more. `bbox` is required; a bad box is 400.
 
-### `PATCH /api/tickets/{id}` → `RescueTicket`
-Body: `{ status?, assignee?, note?, updated_at }`.
-- `updated_at` is the value the client last saw. If the ticket changed since, answer **409 `conflict`**.
-- `note` is appended to `notes`.
-- Return the updated ticket.
-
-### Enums (propose adding CHECK constraints in migration 002)
-- **`urgency`:** `critical | high | normal`
-- **`status`:** `open | acknowledged | in_progress | resolved | cancelled`
-- **`vulnerable[]`:** `elderly | bedridden | child | infant | pregnant | disabled | patient | pet`
-- **`needs[]`:** `evacuation | medical | medication | oxygen | dialysis | food_water | boat | power`
+```jsonc
+{ "period": "3days", "fetched_at": "…", "observed_from": "…", "observed_to": "…", "res": 7, "truncated": false,
+  "cells": [ { "h3": "8764a4770ffffff", "cells": 41, "area_km2": 4.9, "share": 0.93 } ] }
+```
 
 ## Chat
 
@@ -118,8 +121,7 @@ Request: `{ session_id, message? | postback? | location?: { lat, lon } }`. Exact
   "quick_replies": [ { "type": "message", "label": "มียายติดเตียง", "text": "ที่บ้านมียายติดเตียง" },
                      { "type": "postback", "label": "อนุญาต", "data": "consent:sensitive_memory:yes", "display_text": "อนุญาต" },
                      { "type": "location", "label": "ส่งตำแหน่ง" } ],
-  "emergency": false,     // true → UI shows the DDPM 1784 card above the reply
-  "ticket_id": null       // set when this turn created a rescue ticket
+  "emergency": false      // true → UI shows the DDPM 1784 card above the reply
 }
 ```
 
@@ -128,17 +130,21 @@ Request: `{ session_id, message? | postback? | location?: { lat, lon } }`. Exact
   level_msl, diff_wl_bank, bank_msl, trend_cm_per_hr, hours_to_bank, risk_tier, upstream_over: string[] }`.
   `diff_wl_bank` is signed (+ over bank); `bank_msl` = `level_msl − diff_wl_bank`; `trend_cm_per_hr` is the 3 h trend;
   `upstream_over` lists upstream station codes already over bank. Any of the reading fields can be null.
+- **GISTDA sources** (`{ type: "gistda", kind, summary, observed_at }`) repeat the reply's satellite lines:
+  - `flood_extent`, from the stored 3-day layer (7-day when the 3-day one is empty): at a GPS point, flooded or not and
+    the nearest flooded cell; around a place found by name (a district centre), the flooded area within 5 km.
+    `observed_at` is the layer's newest GISTDA date, else when it was downloaded.
+  - `flood_recurrence`: the years the subdistrict flooded, 2011–2023 (live GISTDA query). `observed_at` null.
+  - Neither appears before the first layer is downloaded or without `GISTDA_API_KEY`.
 - **Quick replies mirror LINE quick-reply actions** (`message` / `postback` / `location`). The same agent handler can serve the LINE webhook and the web.
-- **Postback data the web sends today:**
+- **Postback data the web sends today** (anything else is 400):
   - `consent:sensitive_memory:yes|no` → write `consents`
-  - `triage:confirm`
-  - `triage:cancel`
   - `memory:delete_all`
 - **Required behaviour** (see the mock's `chatScript.ts` and its test for the full demo flow):
   - Danger messages return `emergency: true`, with 1784 first (on the web, the EmergencyCard above the reply carries it).
+    NamMa files **no rescue request** on anyone's behalf: the reply says so, lists what to tell 1784 (the place, who
+    needs help, how many people, from the message and memory) and what to do while waiting. No quick replies.
   - Web replies are plain text without emoji and without the hotline lines the UI already draws: no rescue 1784/1669 line when `emergency` is true, no DDPM footer when `sources` has a station (HotlineNotice). LINE replies keep both.
-  - A location shared within an hour of a rescue request replaces that ticket's coordinates (GPS beats the geocoded place) and sends it if it was unconfirmed.
-  - Confirm before creating a ticket.
   - Ask for consent before saving vulnerable or health facts.
   - Say when a place is outside the demo basin instead of guessing.
   - Shelter questions ("ศูนย์พักพิงแถวบางบาล", "บ้านแม่ควรอพยพไปที่ไหน") list up to 3 shelters near the named place,
@@ -179,7 +185,7 @@ One account per person. It signs in with **LINE**, with **Google**, or with both
 memory, consents and history across devices. LINE OA chatters already have an account (keyed by their LINE userId):
 signing in on the web with LINE opens that same account.
 
-`SessionUser = { display_name, role, picture_url, identities: { line: boolean, google: string | null } }`
+`SessionUser = { display_name, picture_url, identities: { line: boolean, google: string | null } }`
 (`google` is the linked Google account's email, shown on the account page only, never used to match accounts).
 
 ### `POST /api/auth/line` → `{ session_token, user: SessionUser, merged_chat: boolean }`
@@ -188,9 +194,9 @@ Body: `{ id_token, chat_session? }`.
 - **LINE:** a LIFF ID token, verified with `POST https://api.line.me/oauth2/v2.1/verify` (`client_id` = `LINE_LOGIN_CHANNEL_ID`). `sub` is the LINE userId.
 - **Google:** a Google Sign-In ID token, verified with `https://oauth2.googleapis.com/tokeninfo`; `aud` must be `GOOGLE_CLIENT_ID` and the email verified. `sub` is the Google id.
 - The first sign-in creates the account. A Google-created account has no LINE id until LINE is linked, so it gets no LINE pushes (alerts wait in its messages).
-- **`chat_session`** is the anonymous web chat's `session_id`. Its places, memory, consents, pending facts, messages and tickets join the account and the anonymous chat is deleted (`merged_chat: true`). A place label both have keeps the anonymous chat's (newer) coordinates.
-- **Demo (`DEMO_MODE=1`):** `demo:user`, `demo:responder`, `demo:user:<name>` (LINE, one account per name) and `demo:google:<name>` (Google). `<name>` is `[a-z0-9_-]{1,40}`.
-- `role` is `user | responder`. Responders come from `RESPONDER_LINE_IDS` (or demo).
+- **`chat_session`** is the anonymous web chat's `session_id`. Its places, memory, consents, pending facts and messages join the account and the anonymous chat is deleted (`merged_chat: true`). A place label both have keeps the anonymous chat's (newer) coordinates.
+- **Demo (`DEMO_MODE=1`):** `demo:user`, `demo:user:<name>` (LINE, one account per name) and `demo:google:<name>` (Google). `<name>` is `[a-z0-9_-]{1,40}`.
+- There are no staff accounts or roles (the responder role went with rescue tickets, 2026-10-19).
 
 ### `POST /api/auth/link/{line|google}` → `SessionUser` (signed in)
 Body: `{ id_token }`. Adds a second way to sign in. If that LINE or Google account already has its own NamMa account (a LINE OA chatter, say), it is the same person: that account's places, memory and history join this one and it is deleted. **409 `conflict`** if this account already has a different one of that provider, or merging would give it two. 404 for another provider.
@@ -205,15 +211,15 @@ Ends this session token.
 Returns 401 without a session.
 
 ### `DELETE /api/me` → `{ deleted: true }`
-PDPA erasure: the account, its sign-ins, sessions, places, memory, consents and messages. Rescue tickets stay for the responders' record, unlinked from the person. Signing in again starts an empty account.
+PDPA erasure: the account, its sign-ins, sessions, places, memory, consents and messages. Signing in again starts an empty account.
 
-## Schema gaps for the backend owner
+## Demo controls (`DEMO_MODE=1` only)
 
-The contract needs these against `infra/migrations/001_init.sql`:
+`POST /api/demo/simulate { station_id, tier }` forces a tier and runs the alert job; `POST /api/demo/refresh` recomputes
+real risk. Both need a signed-in session (demo login is enough) and answer 403 when `DEMO_MODE` is off.
 
-1. **`rescue_tickets`** needs `place_label`, `contact_phone`, `channel`, `assignee`, `notes`, plus CHECK constraints for `urgency` and `status`.
-2. **`messages.user_id` is NOT NULL**, but the spec allows anonymous web chat. Make it nullable and add `session_id`, or require LINE login for web chat.
-3. **No audit trail** for who viewed or changed a ticket. Suggested: `ticket_events(ticket_id, actor, action, ts)`. Tickets hold health data (PDPA sensitive).
-4. **Responder role:** `users.role` or an allowlist.
-5. **`stem_order` / `role`** exist only in `data/corridor_stations.csv`. Load them into `stations` or join the CSV.
-6. **`station_edges`** has only RID stations, and `approx_travel_hours` is NULL until estimated.
+## Known gaps
+
+- **`station_edges`** has only RID stations, and `approx_travel_hours` is NULL until estimated.
+- **GISTDA property names** are not documented. `ingest/gistda_flood.py` looks for each field under the names other
+  projects report and archives the first page of each new layer; check the parser against one once we have a key.

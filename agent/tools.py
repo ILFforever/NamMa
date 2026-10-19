@@ -87,8 +87,8 @@ def get_forecast(conn, station_id: int) -> dict | None:
     return rows[0] if rows else None
 
 
-def check_flood_extent(lat: float, lon: float) -> dict | None:
-    return gistda.check_flood_extent(lat, lon)
+def check_flood_extent(conn, lat: float, lon: float) -> dict | None:
+    return gistda.check_flood_extent(conn, lat, lon)
 
 
 def get_flood_recurrence(lat: float, lon: float) -> dict | None:
@@ -152,7 +152,7 @@ def merge_users(conn, from_id: int, into_id: int) -> bool:
     """Fold one user into another, then delete the first: an anonymous web chat ('web:<session>') joining the
     account that just signed in. Moves places (a label both have keeps the newer, anonymous coordinates),
     memory (field by field, the anonymous chat's facts win), consents (history kept, so the latest decision
-    still wins), pending facts, messages, alerts and rescue tickets. Returns False when there is nothing to do."""
+    still wins), pending facts, messages and alerts. Returns False when there is nothing to do."""
     if from_id == into_id:
         return False
     # Works with any row factory (the API uses dict rows, the agent tuple rows): reads go through _rows.
@@ -171,7 +171,7 @@ def merge_users(conn, from_id: int, into_id: int) -> bool:
     conn.execute("INSERT INTO pending_facts (user_id, facts) SELECT %s, facts FROM pending_facts WHERE user_id = %s "
                  "ON CONFLICT (user_id) DO UPDATE SET facts = pending_facts.facts || EXCLUDED.facts, ts = now()",
                  (into_id, from_id))
-    for table in ("consents", "messages", "alerts_sent", "rescue_tickets"):
+    for table in ("consents", "messages", "alerts_sent"):
         conn.execute(f"UPDATE {table} SET user_id = %s WHERE user_id = %s", (into_id, from_id))
     # Sign-in identities follow the person, unless the account already has one of that provider.
     conn.execute("UPDATE user_identities SET user_id = %s WHERE user_id = %s AND provider NOT IN "
@@ -190,8 +190,7 @@ def is_line_id(external_id: str | None) -> bool:
 
 
 def delete_user(conn, user_id: int) -> None:
-    """PDPA erasure: the account and everything kept about the person. Rescue tickets stay for the responders'
-    record but lose the link to the person (ON DELETE SET NULL)."""
+    """PDPA erasure: the account and everything kept about the person (the rest cascades)."""
     conn.execute("DELETE FROM users WHERE id = %s", (user_id,))
 
 
@@ -256,26 +255,6 @@ def save_location(conn, user_id: int, label: str, lat: float, lon: float, notes:
         return row[0]
     return conn.execute("INSERT INTO user_locations (user_id, label, lat, lon, notes) VALUES (%s, %s, %s, %s, %s) "
                         "RETURNING id", (user_id, label, lat, lon, notes)).fetchone()[0]
-
-
-def create_rescue_ticket(conn, user_id: int | None, raw_text: str, lat: float | None, lon: float | None,
-                         people_count: int | None, vulnerable: list, needs: list, urgency: str,
-                         status: str = "open", channel: str = "line", place_label: str | None = None) -> int:
-    """channel is 'line' or 'web'; place_label is the place in words ("อ.บางบาล จ.พระนครศรีอยุธยา") if known."""
-    return conn.execute(
-        "INSERT INTO rescue_tickets (user_id, raw_text, lat, lon, people_count, vulnerable, needs, urgency, status, "
-        "channel, place_label) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s) RETURNING id",
-        (user_id, raw_text, lat, lon, people_count, json.dumps(vulnerable, ensure_ascii=False),
-         json.dumps(needs, ensure_ascii=False), urgency, status, channel, place_label)).fetchone()[0]
-
-
-def update_ticket(conn, ticket_id: int, **fields) -> None:
-    allowed = {k: v for k, v in fields.items()
-               if k in ("status", "lat", "lon", "people_count", "urgency", "place_label", "contact_phone")}
-    if not allowed:
-        return
-    sets = ", ".join(f"{k} = %s" for k in allowed)
-    conn.execute(f"UPDATE rescue_tickets SET {sets}, updated_at = now() WHERE id = %s", (*allowed.values(), ticket_id))
 
 
 def log_message(conn, user_id: int, channel: str, role: str, content: str) -> int:

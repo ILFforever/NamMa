@@ -12,16 +12,14 @@ from agent.geo import find_place
 from agent.risk import rank
 
 CONSENT_YES, CONSENT_NO = "ยินยอมให้จำข้อมูล", "ไม่ยินยอม"
-CONFIRM_RE = re.compile(r"ยืนยันขอความช่วยเหลือ\s*#(\d+)")
-CONFIRM_TEXT = "ยืนยันส่งคำขอ"      # confirm the newest unconfirmed ticket (web postback triage:confirm)
-CANCEL_TEXT = "ยกเลิกคำขอ"          # cancel the newest unconfirmed ticket (web postback triage:cancel)
 FORGET_ALL_TEXT = "ลบข้อมูลทั้งหมด"  # same text as the profile quick reply (web postback memory:delete_all)
+APPROX_NOTE = "ประมาณจากชื่อพื้นที่: "  # user_locations.notes of a place geocoded from its name, not a GPS share
 CONSENT_PROMPT = ("🔒 ขออนุญาตจำข้อมูลนี้ เพื่อแจ้งเตือนและช่วยเหลือได้เร็วขึ้นไหม?\n"
                   "ข้อมูลสุขภาพเป็นข้อมูลอ่อนไหวตาม PDPA ถ้าไม่ยินยอม จะใช้เฉพาะในบทสนทนานี้")
 HELP = ("สวัสดีค่ะ น้ำมาช่วยดูความเสี่ยงน้ำท่วมจากข้อมูลสถานีวัดน้ำจริง\n"
         "ลองพิมพ์ เช่น \"บ้านแม่อยู่บางบาล อยุธยา น้ำจะถึงไหม\" หรือกดแชร์ตำแหน่ง\n"
-        "ถ้าอยู่ในอันตราย พิมพ์ \"ช่วยด้วย\" ได้ทันที\n\n" + answer.FOOTER)
-# "Where do I go": shelters, evacuation centres. Checked after danger, so "ติดอยู่ ไปศูนย์พักพิงไม่ได้" is still rescue.
+        "ถ้าอยู่ในอันตราย โทร 1784 (ปภ.) ได้ทันที\n\n" + answer.FOOTER)
+# "Where do I go": shelters, evacuation centres. Checked after danger, so "ติดอยู่ ไปศูนย์พักพิงไม่ได้" is still danger.
 SHELTER_RE = re.compile(r"ศูนย์พักพิง|ที่พักพิง|ศูนย์อพยพ|จุดอพยพ|อพยพไปที่ไหน|อพยพไปไหน|ไปพักที่ไหน|ที่หลบภัย")
 RISK_WORDS = ("น้ำ", "ท่วม", "ตลิ่ง", "ระดับ", "อพยพ", "เสี่ยง")
 RESCUE_HOTLINE = "🚨 ถ้าอันตรายตอนนี้ โทร 1784 (ปภ.) หรือ 1669 (เจ็บป่วยฉุกเฉิน) ทันที • LINE @1784DDPM"
@@ -40,9 +38,8 @@ class QuickReply:
 class Reply:
     text: str
     quick: list[QuickReply] = field(default_factory=list)
-    ticket_id: int | None = None
     sources: list[dict] = field(default_factory=list)   # docs/api.md Source objects (used by the web API)
-    emergency: bool = False                             # danger signalled, or a ticket was created/confirmed
+    emergency: bool = False                             # danger signalled: the web shows the 1784 card first
     place: dict | None = None                           # {label, lat, lon, approx, saved_label}: lets LINE show a map pin + card
     extra: list[str] = field(default_factory=list)      # notes already inside text that the LINE card does not repeat
 
@@ -74,7 +71,7 @@ def handle(conn, external_id: str | None, channel: str, text: str | None = None,
         tools.log_message(conn, uid, channel, "user", text)
     elif location:
         tools.log_message(conn, uid, channel, "user", f"[ตำแหน่ง {location[0]:.5f},{location[1]:.5f}]")
-    reply = _route(conn, uid, text or "", location, channel)
+    reply = _route(conn, uid, text or "", location)
     if channel == "web":
         reply = web_reply(reply)
     tools.log_message(conn, uid, channel, "assistant", reply.text)
@@ -93,10 +90,10 @@ def web_reply(reply: Reply) -> Reply:
     elif any(s["type"] == "station" for s in reply.sources):
         text = text.removesuffix("\n\n" + answer.FOOTER)
     text = "\n".join(_EMOJI.sub("", ln).strip() for ln in text.split("\n"))
-    return Reply(text, reply.quick, reply.ticket_id, reply.sources, reply.emergency)
+    return Reply(text, reply.quick, reply.sources, reply.emergency)
 
 
-def _route(conn, uid: int, text: str, location, channel: str = "line") -> Reply:
+def _route(conn, uid: int, text: str, location) -> Reply:
     t = text.strip()
     if t == CONSENT_YES:
         tools.record_consent(conn, uid, True)
@@ -108,13 +105,6 @@ def _route(conn, uid: int, text: str, location, channel: str = "line") -> Reply:
     if t == CONSENT_NO:
         tools.record_consent(conn, uid, False)
         return Reply("ได้ค่ะ จะไม่บันทึกข้อมูลนี้ จะใช้เฉพาะในบทสนทนานี้เท่านั้น")
-    if t == CONFIRM_TEXT:
-        tid = pending_ticket_id(conn, uid)
-        return _confirm(conn, uid, tid) if tid else _no_pending()
-    if m := CONFIRM_RE.search(t):
-        return _confirm(conn, uid, int(m.group(1)))
-    if t == CANCEL_TEXT:
-        return _cancel(conn, uid)
     if location:
         return _on_location(conn, uid, location)
     if t in (SET_HOME, ADD_PLACE, ADD_FACTS):
@@ -124,7 +114,7 @@ def _route(conn, uid: int, text: str, location, channel: str = "line") -> Reply:
     if t == HOME:
         return _home(conn, uid)
     if triage.is_danger(t):
-        return _rescue(conn, uid, t, channel)
+        return _emergency(conn, uid, t)
     if re.search(r"จำอะไร|ข้อมูลอะไรที่จำ|ข้อมูลของฉัน|โปรไฟล์", t):
         return _profile(conn, uid)
     if t.startswith("ลบ"):
@@ -162,13 +152,14 @@ def _assess(conn, uid: int, lat: float, lon: float, label: str, approx: bool,
     stations = tools.get_nearest_stations(conn, lat, lon, k=3)
     hh = mem.get("household") or {}
     shelters = tools.find_shelters(conn, lat, lon, {"patients": bool(hh.get("immobile")), "pets": bool(hh.get("pets"))})
-    extent = tools.check_flood_extent(lat, lon)
+    extent = tools.check_flood_extent(conn, lat, lon)
     recurrence = tools.get_flood_recurrence(lat, lon)
     text = answer.risk_answer(label, approx, stations, shelters, mem, extent, recurrence, extra)
-    return text, _sources(stations, shelters, extent, recurrence)
+    return text, _sources(stations, shelters, extent, recurrence, approx)
 
 
-def _sources(stations: list[dict], shelters: list[dict], extent: dict | None, recurrence: dict | None) -> list[dict]:
+def _sources(stations: list[dict], shelters: list[dict], extent: dict | None, recurrence: dict | None,
+             approx: bool) -> list[dict]:
     """Mirrors what answer.risk_answer prints: main station (+ the worse one if shown), first shelter, GISTDA lines."""
     if not stations:            # risk_answer prints no numbers at all without a station
         return []
@@ -179,12 +170,10 @@ def _sources(stations: list[dict], shelters: list[dict], extent: dict | None, re
     out += [{"type": "shelter", "shelter_id": sh["id"], "name": sh["name"], "distance_km": sh["distance_km"]}
             for sh in shelters[:1]]
     if extent is not None:
-        out.append({"type": "gistda", "kind": "flood_extent", "observed_at": None,
-                    "summary": "พบพื้นที่น้ำท่วมที่จุดนี้ (ภาพดาวเทียม 1 วันล่าสุด)" if extent["flooded_last_1day"]
-                    else "ไม่พบน้ำท่วมที่จุดนี้ (ภาพดาวเทียม 1 วันล่าสุด)"})
-    if recurrence is not None and recurrence.get("records"):
-        out.append({"type": "gistda", "kind": "flood_recurrence", "observed_at": None,
-                    "summary": f"จุดนี้เคยมีบันทึกน้ำท่วม {recurrence['records']} ครั้ง (2011–2023)"})
+        out.append({"type": "gistda", "kind": "flood_extent", "observed_at": extent["as_of"],
+                    "summary": answer.flood_extent_text(extent, approx)})
+    if recurrence is not None and (summary := answer.recurrence_text(recurrence)):
+        out.append({"type": "gistda", "kind": "flood_recurrence", "observed_at": None, "summary": summary})
     return out
 
 
@@ -211,10 +200,10 @@ def _talk(conn, uid: int, t: str) -> Reply:
     if place:
         target = (place.lat, place.lon, (label + " " if label else "") + place.label, True)
         if label:
-            tools.save_location(conn, uid, label, place.lat, place.lon, notes=f"ประมาณจากชื่อพื้นที่: {place.label}")
+            tools.save_location(conn, uid, label, place.lat, place.lon, notes=APPROX_NOTE + place.label)
     elif prof["locations"] and any(w in t for w in RISK_WORDS):
         loc = next((l for l in prof["locations"] if l["label"] in t), prof["locations"][0])
-        target = (loc["lat"], loc["lon"], loc["label"], bool(loc["notes"] and loc["notes"].startswith("ประมาณ")))
+        target = (loc["lat"], loc["lon"], loc["label"], _approx(loc))
 
     if target:
         extra = []
@@ -252,7 +241,7 @@ def _shelters(conn, uid: int, t: str) -> Reply:
     elif prof["locations"]:
         loc = next((l for l in prof["locations"] if l["label"] in t), prof["locations"][0])
         lat, lon, label = loc["lat"], loc["lon"], loc["label"]
-        approx = bool(loc["notes"] and loc["notes"].startswith("ประมาณ"))
+        approx = _approx(loc)
     else:
         return Reply("บอกชื่อตำบล/อำเภอ หรือกดแชร์ตำแหน่ง แล้วจะหาศูนย์พักพิงที่ใกล้ที่สุดให้ค่ะ\n"
                      "ถ้าต้องการความช่วยเหลือด่วน โทร 1784 ได้ทันที", [LOCATION_Q])
@@ -272,16 +261,6 @@ def _shelters(conn, uid: int, t: str) -> Reply:
 
 def _on_location(conn, uid: int, location) -> Reply:
     lat, lon = location
-    # A GPS fix beats the place-name or saved-place guess triage started with, so it replaces the ticket's
-    # coordinates; an unconfirmed ticket is sent with it. Tickets being worked on keep their status.
-    open_ticket = conn.execute(
-        "SELECT id, status FROM rescue_tickets WHERE user_id = %s AND created_at > now() - interval '1 hour' "
-        "AND status NOT IN ('resolved', 'cancelled') ORDER BY id DESC LIMIT 1", (uid,)).fetchone()
-    if open_ticket:
-        tid, status = open_ticket
-        tools.update_ticket(conn, tid, lat=lat, lon=lon, status="open" if status == "unconfirmed" else status)
-        return Reply(f"📍 ได้รับตำแหน่งแล้ว ส่งคำขอ #{tid} พร้อมพิกัดถึงทีมช่วยเหลือแล้ว\n"
-                     "☎️ โทร 1784 ซ้ำได้ถ้าสถานการณ์แย่ลง", ticket_id=tid, emergency=True)
     label = _save_shared(conn, uid, lat, lon)
     text, sources = _assess(conn, uid, lat, lon, label, approx=False,
                             extra=[f"📌 บันทึกตำแหน่งนี้เป็น \"{label}\" แล้ว จะแจ้งเตือนเมื่อน้ำสูงขึ้น"])
@@ -352,61 +331,45 @@ def _home(conn, uid: int) -> Reply:
                  place={"label": HOME, "lat": loc["lat"], "lon": loc["lon"], "approx": approx, "saved_label": None})
 
 
-def _rescue(conn, uid: int, t: str, channel: str = "line") -> Reply:
-    _remember(conn, uid, t)   # parks sensitive facts; triage still uses them for this ticket
+def _approx(loc: dict) -> bool:
+    """A saved place geocoded from its name (a district centre), not a GPS share."""
+    return bool(loc["notes"] and loc["notes"].startswith(APPROX_NOTE))
+
+
+def _place_words(t: str, locations: list[dict]) -> str | None:
+    """Where the person is, in words 1784 can use: a place named in the message, else the first saved place
+    (its district, or its coordinates when it was a GPS share)."""
+    if place := find_place(t):
+        return place.label
+    if not locations:
+        return None
+    loc = locations[0]
+    if _approx(loc):
+        return f"{loc['label']} ({loc['notes'].removeprefix(APPROX_NOTE)})"
+    return f"{loc['label']} (พิกัด {loc['lat']:.5f}, {loc['lon']:.5f})"
+
+
+def _emergency(conn, uid: int, t: str) -> Reply:
+    """Danger: 1784 first, then what to tell them. NamMa sends nothing on the person's behalf, and says so."""
+    _remember(conn, uid, t)   # parks sensitive facts; the call details below still use them, for this reply only
     prof = tools.get_user_profile(conn, uid)
-    mem = memory.merged_view(prof["memory"], prof["pending"])
-    f = triage.extract(t, mem)
-    place = find_place(t)
-    if place:
-        lat, lon, place_label = place.lat, place.lon, place.label
-    elif prof["locations"]:
-        saved = prof["locations"][0]
-        lat, lon, place_label = saved["lat"], saved["lon"], saved["label"]
-    else:
-        lat, lon, place_label = None, None, None
-    tid = tools.create_rescue_ticket(conn, uid, t, lat, lon, f["people_count"], f["vulnerable"], f["needs"],
-                                     f["urgency"], status="unconfirmed", channel=channel, place_label=place_label)
-    lines = [RESCUE_HOTLINE,
-             "", f"น้ำมาเตรียมคำขอความช่วยเหลือ #{tid} ให้ทีมช่วยเหลือแล้ว:",
-             f"• จำนวนคน: {f['people_count'] or 'ไม่ระบุ'}",
-             f"• ผู้ที่ต้องดูแลพิเศษ: {', '.join(f['vulnerable']) or 'ไม่ระบุ'}",
-             f"• ต้องการ: {', '.join(triage.NEEDS_TH.get(n, n) for n in f['needs'])}",
-             f"• ความเร่งด่วน: {'วิกฤต' if f['urgency'] == 'critical' else 'สูง'}",
-             f"• ตำแหน่ง: {f'ประมาณจาก {place_label} แชร์ตำแหน่งเพื่อให้แม่นขึ้น' if lat is not None else 'ยังไม่มี กรุณาแชร์ตำแหน่ง'}",
-             "", "ระหว่างรอ: ขึ้นที่สูง ปิดไฟฟ้า อยู่ห่างกระแสน้ำ เปิดโทรศัพท์ไว้"]
-    quick = [_q("ยืนยันส่งคำขอ", f"ยืนยันขอความช่วยเหลือ #{tid}"), LOCATION_Q]
-    return Reply("\n".join(lines), quick, ticket_id=tid, emergency=True)
-
-
-def pending_ticket_id(conn, uid: int) -> int | None:
-    """The newest ticket this person has not confirmed yet (created in the last hour), if any."""
-    row = conn.execute("SELECT id FROM rescue_tickets WHERE user_id = %s AND status = 'unconfirmed' "
-                       "AND created_at > now() - interval '1 hour' ORDER BY id DESC LIMIT 1", (uid,)).fetchone()
-    return row[0] if row else None
-
-
-def _no_pending() -> Reply:
-    return Reply("ไม่พบคำขอความช่วยเหลือที่รอยืนยันค่ะ ถ้าต้องการความช่วยเหลือ โทร 1784 ได้ทันที", [LOCATION_Q])
-
-
-def _confirm(conn, uid: int, tid: int) -> Reply:
-    """Only the owner's ticket, and only while it is still unconfirmed."""
-    row = conn.execute("SELECT status FROM rescue_tickets WHERE id = %s AND user_id = %s", (tid, uid)).fetchone()
-    if not row or row[0] != "unconfirmed":
-        return Reply(f"ไม่พบคำขอ #{tid} ที่รอยืนยันค่ะ", [LOCATION_Q])
-    tools.update_ticket(conn, tid, status="open")
-    return Reply(f"✅ ส่งคำขอความช่วยเหลือ #{tid} ถึงทีมช่วยเหลือแล้ว\n"
-                 "ระหว่างรอ: อยู่ที่สูง เปิดโทรศัพท์ไว้ และโทร 1784 ซ้ำได้ถ้าสถานการณ์แย่ลง",
-                 [LOCATION_Q], ticket_id=tid, emergency=True)
-
-
-def _cancel(conn, uid: int) -> Reply:
-    tid = pending_ticket_id(conn, uid)
-    if not tid:
-        return _no_pending()
-    tools.update_ticket(conn, tid, status="cancelled")
-    return Reply(f"ยกเลิกคำขอ #{tid} แล้ว ถ้าต้องการความช่วยเหลือ โทร 1784 ได้ทันที")
+    d = triage.call_details(t, memory.merged_view(prof["memory"], prof["pending"]))
+    tell = []
+    if where := _place_words(t, prof["locations"]):
+        tell.append(f"• ตำแหน่ง: {where}")
+    if d["vulnerable"]:
+        tell.append(f"• ผู้ที่ต้องช่วยเป็นพิเศษ: {', '.join(d['vulnerable'])}")
+    if d["people_count"]:
+        tell.append(f"• จำนวนคน: {d['people_count']}")
+    lines = [RESCUE_HOTLINE, "", "น้ำมาไม่ได้ส่งเรื่องให้หน่วยกู้ภัยแทน ต้องโทร 1784 แจ้งเอง"]
+    if tell:
+        lines += ["ตอนโทร แจ้งว่า:", *tell]
+    lines += ["", "ระหว่างรอ:",
+              "• ขึ้นไปชั้นบนหรือที่สูง พาผู้ที่เดินไม่ได้ขึ้นก่อน",
+              "• ตัดไฟชั้นล่างถ้าทำได้โดยไม่ต้องลุยน้ำ",
+              "• เตรียมยา น้ำดื่ม ไฟฉาย และเปิดโทรศัพท์ไว้",
+              "• ถ้าสถานการณ์แย่ลง โทร 1784 ซ้ำได้ทันที"]
+    return Reply("\n".join(lines), emergency=True)
 
 
 def _profile(conn, uid: int) -> Reply:

@@ -20,7 +20,7 @@ Read the docs for a service before changing it.
 ## 3. Outside Huawei
 - [ ] LINE Messaging API channel → `LINE_CHANNEL_*`. Profile picture: `namma-web/public/brand/namma-line-profile.png`
       (the logo, บ้านบนคลื่น); OA name "น้ำมา NamMa".
-- [ ] LINE Login channel (same provider as the OA) → `LINE_LOGIN_*`; responders' LINE userIds → `RESPONDER_LINE_IDS`
+- [ ] LINE Login channel (same provider as the OA) → `LINE_LOGIN_*`
 - [ ] Google Sign-In (optional second way to sign in on the web): Google Cloud Console → APIs & Services → Credentials →
       OAuth client ID, type "Web application", authorised JavaScript origin = the site's https URL → `GOOGLE_CLIENT_ID`
 - [ ] GISTDA API key (https://api-gateway.gistda.or.th) → `GISTDA_API_KEY`
