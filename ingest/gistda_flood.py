@@ -2,6 +2,7 @@
 
     python -m ingest.gistda_flood                  # both layers once (3-day, then 7-day)
     python -m ingest.gistda_flood --period 3days
+    python -m ingest.gistda_flood --force          # re-store both even if unchanged (after a parser fix)
     python -m ingest.gistda_flood --every 10800    # loop; the API runs this itself when SCHEDULER=1 and a key is set
 
 GET https://api-gateway.gistda.or.th/api/2.0/resources/features/flood/{3days|7days}?limit=&offset=
@@ -46,9 +47,11 @@ RAI_PER_KM2 = 625
 TO_KM2 = {"km2": 1.0, "rai": 1 / RAI_PER_KM2, "m2": 1e-6}
 KEEP_RAW = 10                           # archived first pages per period
 
-H3_KEYS = ("h3", "h3_index", "h3index", "h3_id", "h3id", "hex_id", "hexid", "cell_id", "grid_id", "index")
+H3_KEYS = ("h3_address", "h3", "h3_index", "h3index", "h3_id", "h3id", "hex_id", "hexid", "cell_id", "grid_id", "index")
 # (property, unit). None = no unit in the name: read with area_unit() over the whole layer.
-AREA_KEYS = (("area_km2", "km2"), ("flood_km2", "km2"), ("area_sqkm", "km2"), ("area_rai", "rai"),
+# f_area is GISTDA's flooded part of the cell in m² (seen 2026-10-19); h3_area next to it is the whole cell, so it
+# comes last: read as a flooded area it makes every cell 100% flooded.
+AREA_KEYS = (("f_area", "m2"), ("area_km2", "km2"), ("flood_km2", "km2"), ("area_sqkm", "km2"), ("area_rai", "rai"),
              ("flood_rai", "rai"), ("rai", "rai"), ("area_m2", "m2"), ("area_sqm", "m2"),
              ("flood_area", None), ("h3_area", None), ("area", None))
 NAME_KEYS = {"province": ("pv_tn", "pv_name", "pv_th", "province_name", "prov_nam_t", "province"),
@@ -65,6 +68,9 @@ IMPACT_KEYS = {"buildings": ("building", "buildings", "num_building", "bldg"),
                "hospitals": ("hospital", "hospitals", "num_hospital")}
 DATE_KEYS = ("date", "flood_date", "acq_date", "acquired", "datetime", "obs_date", "image_date", "update_date",
              "updated_at", "last_update", "created_at", "publish_date")
+# GISTDA sends no date field: the scenes are named in file_name, "cm2_20261018_0607, cm4_20261019_0627". Their times
+# are Thai local (06:07 / 17:10 are the dawn and dusk passes of a sun-synchronous radar satellite over Thailand).
+SCENE_DATE = re.compile(r"(\d{8})_(\d{4})")
 NAME_PREFIX = re.compile(r"^(จังหวัด|อำเภอ|ตำบล|เขต|แขวง|จ\.|อ\.|ต\.)\s*")
 
 
@@ -180,6 +186,10 @@ def parse_feature(f: dict) -> dict | None:
     if hit := _first(low, DATE_KEYS):
         out["observed_at"] = _when(hit[1])
         used.add(hit[0])
+    elif isinstance(low.get("file_name"), str) and (scenes := SCENE_DATE.findall(low["file_name"])):
+        d, t = max(scenes)                   # the newest scene the cell was seen in
+        out["observed_at"] = datetime.strptime(d + t, "%Y%m%d%H%M").replace(tzinfo=BKK)
+        used.add("file_name")
     # Everything else as sent (impact counts, scenes), scalars only. URLs are dropped: links can carry the key.
     out["props"] = {k: v for k, v in (props or {}).items() if str(k).lower() not in used
                     and (v is None or isinstance(v, (bool, int, float)) or (isinstance(v, str) and len(v) <= 200
@@ -334,9 +344,10 @@ def store(conn, period: str, rows: list[dict], fp: str | None, unit: str) -> dic
     return summary
 
 
-def run_once(conn, period: str, key: str | None = None, client: httpx.Client | None = None) -> dict | None:
-    """Download one layer if it changed and store it. Returns the stored summary, or None when unchanged.
-    Any failure raises and leaves the stored layer as it was."""
+def run_once(conn, period: str, key: str | None = None, client: httpx.Client | None = None,
+             force: bool = False) -> dict | None:
+    """Download one layer if it changed (or `force`: after a parser fix) and store it. Returns the stored summary, or
+    None when unchanged. Any failure raises and leaves the stored layer as it was."""
     key = key or os.environ.get("GISTDA_API_KEY")
     if not key and client is None:
         raise GistdaError("GISTDA_API_KEY is not set")
@@ -348,7 +359,7 @@ def run_once(conn, period: str, key: str | None = None, client: httpx.Client | N
     try:
         first = fetch_page(client, period, 0)
         fp = fingerprint(first)
-        if last and last[0] == fp and datetime.now(timezone.utc) - last[1] < REFETCH_ANYWAY:
+        if not force and last and last[0] == fp and datetime.now(timezone.utc) - last[1] < REFETCH_ANYWAY:
             return None
         archive(period, first, key)
         cells = [c for page in fetch_layer(client, period, first) for f in page["features"] if (c := parse_feature(f))]
@@ -361,14 +372,14 @@ def run_once(conn, period: str, key: str | None = None, client: httpx.Client | N
     return summary
 
 
-def run_all(periods=PERIODS) -> None:
+def run_all(periods=PERIODS, force: bool = False) -> None:
     from common.db import connect
     key = os.environ.get("GISTDA_API_KEY")
     for period in periods:
         started = time.monotonic()
         try:
             with connect() as conn:
-                s = run_once(conn, period, key)
+                s = run_once(conn, period, key, force=force)
             print(f"gistda {period}: " + ("unchanged" if s is None else
                   f"{s['cells']} cells, {s['area_km2']:.1f} km² in {time.monotonic() - started:.0f} s"), flush=True)
         except Exception as e:               # keep the stored layer; water data does not depend on this
@@ -385,9 +396,10 @@ def main() -> None:
     p = argparse.ArgumentParser()
     p.add_argument("--period", choices=PERIODS, help="one layer; default both")
     p.add_argument("--every", type=int, help="seconds between runs; omit to run once")
+    p.add_argument("--force", action="store_true", help="store the layer even if unchanged (after a parser fix)")
     args = p.parse_args()
     periods = (args.period,) if args.period else PERIODS
-    loop(args.every, periods) if args.every else run_all(periods)
+    loop(args.every, periods) if args.every else run_all(periods, force=args.force)
 
 
 if __name__ == "__main__":
