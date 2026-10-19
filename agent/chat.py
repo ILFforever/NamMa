@@ -42,6 +42,8 @@ class Reply:
     ticket_id: int | None = None
     sources: list[dict] = field(default_factory=list)   # docs/api.md Source objects (used by the web API)
     emergency: bool = False                             # danger signalled, or a ticket was created/confirmed
+    place: dict | None = None                           # {label, lat, lon, approx, saved_label}: lets LINE show a map pin + card
+    extra: list[str] = field(default_factory=list)      # notes already inside text that the LINE card does not repeat
 
 
 def _q(label, text=None):
@@ -213,7 +215,10 @@ def _talk(conn, uid: int, t: str) -> Reply:
             extra.append(CONSENT_PROMPT)
             quick = _consent_quick()
         text, sources = _assess(conn, uid, target[0], target[1], target[2], target[3], extra)
-        return Reply(text, quick, sources=sources)
+        place_info = {"label": target[2], "lat": target[0], "lon": target[1], "approx": target[3],
+                      "saved_label": label if label and place else None}
+        return Reply(text, quick, sources=sources, place=place_info,
+                     extra=[e for e in extra if not e.startswith("📌")])
 
     if facts:
         lines = memory.describe(facts)
@@ -270,7 +275,8 @@ def _on_location(conn, uid: int, location) -> Reply:
     tools.save_location(conn, uid, label, lat, lon)
     text, sources = _assess(conn, uid, lat, lon, label, approx=False,
                             extra=[f"📌 บันทึกตำแหน่งนี้เป็น \"{label}\" แล้ว จะแจ้งเตือนเมื่อน้ำสูงขึ้น"])
-    return Reply(text, [PROFILE_Q], sources=sources)
+    return Reply(text, [PROFILE_Q], sources=sources,
+                 place={"label": label, "lat": lat, "lon": lon, "approx": False, "saved_label": label})
 
 
 def _rescue(conn, uid: int, t: str, channel: str = "line") -> Reply:
