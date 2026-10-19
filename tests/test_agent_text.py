@@ -56,10 +56,10 @@ def test_gistda_lines():
     assert "พบน้ำท่วมที่จุดนี้" in answer.flood_extent_text({**extent, "at_point": True, "nearest_km": 0.0}, False)
     assert "ไม่พบพื้นที่น้ำท่วมในรัศมี 5 กม." in answer.flood_extent_text({**extent, "nearest_km": None}, True)
     assert answer.recurrence_text({"tambon": "บ้านกุ่ม", "years": [2011, 2017, 2022]}) == \
-        "สถิติ GISTDA 2011–2023: ต.บ้านกุ่ม มีน้ำท่วม 3 ปี (ล่าสุดปี 2022)"
+        "สถิติ GISTDA 2011–2024: ต.บ้านกุ่ม มีน้ำท่วม 3 ปี (ล่าสุดปี 2022)"
     assert answer.recurrence_text({"years": []}) is None
     txt = answer.risk_answer("บ้านแม่", False, [STATION], [], {}, extent, {"tambon": None, "years": [2011]})
-    assert "🛰️ ภาพดาวเทียม GISTDA 3 วันล่าสุด" in txt and "🛰️ สถิติ GISTDA 2011–2023: พื้นที่นี้" in txt
+    assert "🛰️ ภาพดาวเทียม GISTDA 3 วันล่าสุด" in txt and "🛰️ สถิติ GISTDA 2011–2024: พื้นที่นี้" in txt
 
 
 def test_numbers_guard():

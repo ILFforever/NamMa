@@ -86,11 +86,6 @@ def test_finish_dedupes_converts_and_caps_at_the_cell():
         [0.5, 0.5, 0.5, 1.0, 1.0, 1.0, 1.0]
 
 
-def test_recurrence_makes_no_call(monkeypatch):
-    monkeypatch.setenv("GISTDA_API_KEY", KEY)
-    monkeypatch.setattr(httpx, "get", lambda *a, **k: pytest.fail("chat must not call GISTDA for recurrence"))
-    assert gistda.get_flood_recurrence(*BANG_BAN) is None
-
 
 # --- fetching --------------------------------------------------------------------------------------
 

@@ -153,7 +153,7 @@ def _assess(conn, uid: int, lat: float, lon: float, label: str, approx: bool,
     hh = mem.get("household") or {}
     shelters = tools.find_shelters(conn, lat, lon, {"patients": bool(hh.get("immobile")), "pets": bool(hh.get("pets"))})
     extent = tools.check_flood_extent(conn, lat, lon)
-    recurrence = tools.get_flood_recurrence(lat, lon)
+    recurrence = tools.get_flood_recurrence(conn, lat, lon)
     text = answer.risk_answer(label, approx, stations, shelters, mem, extent, recurrence, extra)
     return text, _sources(stations, shelters, extent, recurrence, approx)
 
@@ -172,7 +172,7 @@ def _sources(stations: list[dict], shelters: list[dict], extent: dict | None, re
     if extent is not None:
         out.append({"type": "gistda", "kind": "flood_extent", "observed_at": extent["as_of"],
                     "summary": answer.flood_extent_text(extent, approx)})
-    if recurrence is not None and (summary := answer.recurrence_text(recurrence)):
+    if recurrence is not None and (summary := answer.recurrence_text(recurrence, approx)):
         out.append({"type": "gistda", "kind": "flood_recurrence", "observed_at": None, "summary": summary})
     return out
 

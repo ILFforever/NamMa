@@ -7,3 +7,4 @@ uvicorn[standard]==0.32.1
 lightgbm==4.5.0
 tzdata==2026.5  # zoneinfo has no system tz database on Windows
 h3==4.5.0       # GISTDA flood cells (ingest/gistda_flood.py)
+esdk-obs-python==3.26.6  # raw copies to OBS (ingest/gistda_history.py)
