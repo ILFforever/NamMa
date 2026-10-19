@@ -1,5 +1,6 @@
 """LINE webhook → agent.chat.handle → reply. Mounted by api.main at POST /line/webhook."""
 import json
+import time
 
 from fastapi import APIRouter, BackgroundTasks, HTTPException, Request
 
@@ -24,6 +25,7 @@ def _handle_event(ev: dict) -> None:
     if not src or not token:
         return
     msg = ev.get("message") or {}
+    t0 = time.monotonic()
     try:
         with connect() as conn:
             if ev["type"] == "follow":
@@ -38,6 +40,8 @@ def _handle_event(ev: dict) -> None:
         # Never leave someone who may be in danger with no answer.
         print(f"chat failed for LINE event: {e!r}", flush=True)
         r = chat.Reply(FALLBACK)
+    took = time.monotonic() - t0
+    print(f"LINE {ev['type']}/{msg.get('type', '-')} answered in {took:.1f}s", flush=True)
     text_only = [client.text_message(r.text, r.quick)]
     try:
         rich = cards.risk_messages(r)
@@ -53,7 +57,13 @@ def _handle_event(ev: dict) -> None:
             return
         except Exception as e:   # a rejected card must never cost the user their answer
             print(f"LINE rich reply failed, sending text: {e!r}", flush=True)
-    client.reply(token, text_only)
+    try:
+        client.reply(token, text_only)
+    except Exception as e:
+        # The reply token expires (~1 min) or was rejected: push the answer instead (costs push quota,
+        # but an unanswered message is worse, above all from someone who may be in danger).
+        print(f"LINE reply failed after {took:.1f}s, pushing instead: {e!r}", flush=True)
+        client.push(src, text_only)
 
 
 @router.post("/line/webhook")
