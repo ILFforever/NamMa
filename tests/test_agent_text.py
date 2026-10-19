@@ -51,6 +51,39 @@ def test_numbers_guard():
     assert not llm.numbers_preserved("ระดับ 4.65 ม.", "อีก 2 ชม. น้ำถึง")
 
 
+class _Resp:
+    def __init__(self, status, content=None):
+        self.status_code, self._content = status, content
+
+    def raise_for_status(self):
+        if self.status_code >= 400:
+            raise RuntimeError(self.status_code)
+
+    def json(self):
+        return {"choices": [{"message": {"content": self._content}}]}
+
+
+def test_llm_chula_thinking_off_and_fallbacks(monkeypatch):
+    monkeypatch.setenv("MAAS_BASE_URL", "https://llm.example/v1")
+    monkeypatch.setenv("MAAS_API_KEY", "k")
+    monkeypatch.setenv("MAAS_MODEL", "qwen3.5")
+    monkeypatch.setenv("LLM_NO_THINKING", "1")
+    sent = {}
+
+    def ok(url, json, **kw):
+        sent.update(json)
+        return _Resp(200, "<think>\n</think>\n\nสวัสดีค่ะ")
+    monkeypatch.setattr(llm.httpx, "post", ok)
+    assert llm.chat([{"role": "user", "content": "hi"}]) == "สวัสดีค่ะ"   # think block stripped
+    assert sent["chat_template_kwargs"] == {"enable_thinking": False} and sent["model"] == "qwen3.5"
+
+    monkeypatch.setattr(llm.httpx, "post", lambda *a, **kw: _Resp(429))
+    assert llm.chat([{"role": "user", "content": "hi"}]) is None          # quota used up → rules
+
+    monkeypatch.delenv("LLM_NO_THINKING")
+    assert "chat_template_kwargs" not in llm.payload([], 0.3, 10)         # other servers: plain body
+
+
 STATION = {"station_id": 2609, "code": "C.35", "name_th": "บ้านป้อม", "river": "แม่น้ำเจ้าพระยา", "agency": "RID",
            "distance_km": 3.2, "reading_ts": "2026-10-14T15:00:00+07:00", "level_msl": 4.9, "diff_wl_bank": 0.55,
            "situation_level": 5, "trend_3h_cm_per_hr": 1.2, "hours_to_bank": None, "risk_tier": "danger",
