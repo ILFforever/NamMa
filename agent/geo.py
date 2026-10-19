@@ -24,10 +24,12 @@ _LEAD_VOWELS = "\u0e40\u0e41\u0e42\u0e43\u0e44"
 _NOT_AFTER = ("ชื่อ", "ชื่อว่า", "นามสกุล", "เขื่อน", "อุทยาน", "อ่างเก็บน้ำ", "อินท")
 # Names that are also ordinary words ("แถวเลย", "ท่าเรือ" = a pier, "นนท์" in "อินทนนท์"): only after อ./ต./จ.,
 # อำเภอ/ตำบล/จังหวัด, or as the first word of the message.
-AMBIGUOUS = {"เลย", "ตาก", "แพร่", "สอง", "ลอง", "ลี้", "พาน", "ธาตุ", "ท่าเรือ"}
+AMBIGUOUS = {"เลย", "ตาก", "แพร่", "สอง", "ลอง", "ลี้", "พาน", "ธาตุ", "ท่าเรือ", "แม่น้ำ"}
 ADMIN_CUES = ("จังหวัด", "จ.", "อำเภอ", "อ.", "ตำบล", "ต.", "เขต", "แขวง")
 # Romanised places people type: replaced by the Thai name before matching.
 ROMAN = {"bangban": "บางบาล", "bangbal": "บางบาล", "bangpain": "บางปะอิน"}
+# Common misspellings of demo-corridor names.
+TYPOS = {"บางบาน": "บางบาล", "อยุทธยา": "อยุธยา", "อยุธา": "อยุธยา", "บางประอิน": "บางปะอิน"}
 # Short names are often everyday words ("เลย", "ตาก", "สอง", "ลอง", "ธาตุ"): they need a place word right before them.
 CUES = ("จังหวัด", "จ.", "อำเภอ", "อ.", "ตำบล", "ต.", "เขต", "แขวง", "อยู่", "แถว", "ที่", "ย่าน", "ใกล้",
         "ดอย", "เขา", "ตีน", "เชิง", "วัด", "ตลาด", "ถนน", "ถ.", "หมู่บ้าน")
@@ -60,7 +62,7 @@ class Place:
 
 
 # Subdistrict names that are also everyday words ("ย้ายไปบ้านใหม่", "อยู่ในเมือง"): never offered as a guess.
-COMMON_WORDS = {"เมือง", "ในเมือง", "บ้านใหม่", "บ้านเก่า", "บ้านกลาง", "ตลาด", "เวียง", "ในเวียง", "หัวเวียง",
+COMMON_WORDS = {"แม่น้ำ", "เมือง", "ในเมือง", "บ้านใหม่", "บ้านเก่า", "บ้านกลาง", "ตลาด", "เวียง", "ในเวียง", "หัวเวียง",
                 "ท่าน้ำ", "ริมน้ำ", "บางน้ำ"}
 
 
@@ -78,6 +80,8 @@ def _norm(text: str) -> tuple[str, str]:
     spaced = " ".join(text.lower().split())
     for en, th in ROMAN.items():                       # "bang ban" and "bangban" alike
         spaced = spaced.replace(en[:4] + " " + en[4:], th).replace(en, th)
+    for typo, th in TYPOS.items():
+        spaced = spaced.replace(typo, th)
     return spaced.replace(" ", ""), spaced
 
 
@@ -103,6 +107,11 @@ def _names(name: str, text: str, spaced: str, need_cue: bool = False) -> bool:
         if not need_cue and len(name) > SHORT:
             return True
     return False
+
+
+def place_text(text: str) -> str:
+    """The text as find_place reads it: no spaces, lowercased, romanised names and typos in Thai."""
+    return _norm(text)[0]
 
 
 def find_place(text: str) -> Place | None:

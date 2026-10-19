@@ -11,7 +11,7 @@ SENSITIVE = {"household", "needs"}
 FIELDS = ("household", "house", "assets", "needs", "history")
 
 WHO = (r"(คุณยาย|คุณตา|แม่ยาย|พ่อตา|ลูกชาย|ลูกสาว|น้องชาย|น้องสาว|พี่ชาย|พี่สาว|ยาย|ตา|ปู่|ย่า|พ่อ|แม่|ลูก|สามี|"
-       r"ภรรยา|เมีย|ผัว|น้อง|พี่|หลาน|ป้า|ลุง|น้า|อา)")
+       r"ภรรยา|เมีย|ผัว|น้อง|พี่|หลาน|ป้า|ลุง|น้า|อา(?!ยุ|การ|หาร))")
 IMMOBILE = r"(ติดเตียง|เดินไม่ได้|นั่งรถเข็น|ป่วยติดเตียง|อัมพาต)"
 
 SYSTEM = """You extract durable facts a Thai user has explicitly stated about their household for a flood assistant.
@@ -42,7 +42,9 @@ _HYPOTHETICAL = re.compile(r"ถ้า|หาก|สมมติ")
 def extract_rules(text: str) -> dict:
     t = _NOT_OURS.sub("", text.replace(" ", ""))
     hh, needs, house, assets, hist = {}, {}, {}, {}, {}
-    who = [m.group(1) for m in re.finditer(WHO + r"\S{0,6}?" + IMMOBILE, t)]
+    who = [m.group(1) for m in re.finditer(WHO + r"\S{0,10}?" + IMMOBILE, t)]
+    if not who and (m := re.search(IMMOBILE, t)):          # "ติดเตียงทั้งพ่อทั้งแม่"
+        who = re.findall(WHO, t[m.end():m.end() + 24])
     if who:
         hh["immobile"] = sorted(set(who))
     elif re.search(IMMOBILE, t):
@@ -55,8 +57,8 @@ def extract_rules(text: str) -> dict:
         hh["children"] = True
     if re.search(r"ตั้งครรภ์|ท้องแก่|คนท้อง|ท้อง\d+เดือน|(ภรรยา|เมีย|แฟน|ลูกสาว|ลูกสะใภ้)\S{0,4}?ท้อง", t):
         hh["pregnant"] = True
-    pets = re.findall(r"(หมา|แมว|สุนัข|สัตว์เลี้ยง)", t)
-    if pets and re.search(r"มี|เลี้ยง", t):
+    pets = re.findall(r"(?:(?<!ไม่)มี|เลี้ยง)\S{0,6}?(หมา|แมว|สุนัข|สัตว์เลี้ยง)(?!จร)", t)
+    if pets and not re.search(r"(ยังไง|อย่างไร|ไหม|มั้ย|ที่ไหน)$", t):
         hh["pets"] = sorted(set(pets))
     if "ฟอกไต" in t or "ล้างไต" in t or "ฟอกเลือด" in t:
         needs["dialysis"] = True
@@ -64,19 +66,19 @@ def extract_rules(text: str) -> dict:
         needs["oxygen"] = True
     if re.search(r"เครื่องช่วยหายใจ|ใช้ไฟฟ้า|ซีแพพ|cpap|ต้องใช้ไฟ", t, re.I):
         needs["power_dependent"] = True
-    if re.search(r"กินยา|ยาประจำ|ยาโรค|อินซูลิน|ยาความดัน|ยาเบาหวาน", t):
+    if re.search(r"ยาประจำ|ยาโรค|อินซูลิน|ยาความดัน|ยาเบาหวาน|กินยา(ประจำ|ทุกวัน|ตลอด|โรค)", t):
         needs["medication"] = True
     if re.search(r"บ้านชั้นเดียว|บ้าน1ชั้น", t):
         house["stories"] = 1
     elif re.search(r"บ้านสองชั้น|บ้าน2ชั้น", t):
         house["stories"] = 2
-    if "ใต้ถุนสูง" in t:
+    if re.search(r"ใต้ถุนสูง|ยกพื้น|ยกสูง", t):
         house["raised"] = True
     if re.search(r"ติดคลอง|ริมคลอง|ใกล้คลอง|ริมแม่น้ำ|ติดแม่น้ำ|ใกล้แม่น้ำ|ริมน้ำ", t):
         house["near_water"] = True
-    if re.search(r"มีรถยนต์|มีรถเก๋ง|มีรถกระบะ|มีรถ(?!มอ|เข็น)", t):
+    if re.search(r"(?<!ไม่)มีรถ(ยนต์|เก๋ง|กระบะ|(?!มอ|เข็น))", t):
         assets["car"] = True
-    if re.search(r"มอเตอร์ไซค์|มอไซ|จักรยานยนต์", t):
+    if re.search(r"(?<!ไม่)มี(รถ)?(มอเตอร์ไซค์|มอไซ|จักรยานยนต์)|ขับ(มอเตอร์ไซค์|มอไซ)", t):
         assets["motorbike"] = True
     m = re.search(r"((?:ปี)?\s*(?:25)?54|2011)\S{0,10}(ท่วม|น้ำเข้า)\S{0,15}", t)
     if m:
@@ -121,7 +123,7 @@ def merged_view(memory: dict, pending: dict) -> dict:
 def location_label(text: str) -> str | None:
     """'บ้านแม่อยู่บางระกำ' → 'บ้านแม่'. First-person homes collapse to 'บ้าน'."""
     t = text.replace(" ", "")
-    m = re.search(r"((?:บ้าน|ร้าน|โรงเรียน|คอนโด)\S{0,12}?|ที่ทำงาน|ออฟฟิศ|หอพัก|โรงงาน)(?:อยู่|ที่|แถว)", t)
+    m = re.search(r"((?:บ้าน|ร้าน|โรงเรียน|คอนโด|หอพัก|ที่ทำงาน|ออฟฟิศ|โรงงาน|สวน|ไร่)\S{0,12}?)(?:อยู่|ที่|แถว)", t)
     if not m:
         return None
     label = m.group(1)
