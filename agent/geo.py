@@ -52,11 +52,12 @@ class Place:
 
     @property
     def label(self) -> str:
+        bkk = self.province == "กรุงเทพมหานคร"      # Bangkok has แขวง/เขต, not ตำบล/อำเภอ
         parts = []
         if self.tambon:
-            parts.append(f"ต.{self.tambon}")
+            parts.append(f"{'แขวง' if bkk else 'ต.'}{self.tambon}")
         if self.amphoe:
-            parts.append(f"อ.{self.amphoe}")
+            parts.append(f"{'เขต' if bkk else 'อ.'}{self.amphoe}")
         parts.append(f"จ.{self.province}")
         return " ".join(parts)
 
@@ -86,11 +87,15 @@ def _norm(text: str) -> tuple[str, str]:
     return joined, spaced
 
 
-def _names(name: str, text: str, spaced: str, need_cue: bool = False, own_province: bool = False) -> bool:
+def _names(name: str, text: str, spaced: str, need_cue: bool = False, own_province: bool = False,
+           within: tuple[tuple[int, int], ...] = ()) -> bool:
     """Is `name` named in the text as a word of its own? Short names (or any name when need_cue) also need a
-    place word before them, or to open the message as a word of their own ("น่าน น้ำจะท่วมไหม")."""
+    place word before them, or to open the message as a word of their own ("น่าน น้ำจะท่วมไหม").
+    within: spans of longer names already found (provinces); a name inside one is part of it ("สิงห์" in "สิงห์บุรี")."""
     for m in re.finditer(re.escape(name), text):
         i, j = m.start(), m.end()
+        if any(a <= i and j <= b and b - a > j - i for a, b in within):
+            continue
         if j < len(text) and _BAD_NEXT.match(text[j]):
             continue
         if i > 0 and text[i - 1] in _LEAD_VOWELS:
@@ -126,9 +131,11 @@ def find_place(text: str) -> Place | None:
     provinces = {v for a, v in PROVINCE_ALIASES.items() if _names(a, text, spaced)}
     places = _gazetteer()
     provinces |= {p.province for p in places if not p.amphoe and _names(p.province, text, spaced)}
+    named = {a for a, v in PROVINCE_ALIASES.items() if v in provinces} | provinces
+    spans = tuple((m.start(), m.end()) for n in named for m in re.finditer(re.escape(n), text))
 
     def hit(name: str, province: str = "") -> bool:
-        return len(name) >= 3 and _names(name, text, spaced, own_province=province in provinces)
+        return len(name) >= 3 and _names(name, text, spaced, own_province=province in provinces, within=spans)
 
     best, best_score = None, 0
     for p in places:
@@ -137,7 +144,13 @@ def find_place(text: str) -> Place | None:
             # A bare tambon name is often shared across provinces; trust it only with context.
             if not hit(p.tambon, p.province) or not (hit(p.amphoe, p.province) or p.province in provinces):
                 continue
-            score = 3 + (1 if hit(p.amphoe, p.province) else 0)
+            if p.tambon == p.amphoe:
+                # "บางบาล" means the district; its namesake subdistrict only when called one ("ต.บางบาล").
+                if not re.search(r"(ต\.|ตำบล|แขวง)" + re.escape(p.tambon), text):
+                    continue
+                score = 3
+            else:
+                score = 3 + (1 if hit(p.amphoe, p.province) else 0)
         elif p.amphoe:
             if not hit(p.amphoe, p.province):
                 continue
