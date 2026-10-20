@@ -120,7 +120,9 @@ real "nothing detected".
 so a cell of the 30-day layer that is also in the 7-day one had water this week, and one also in the 3-day layer had
 it in the last 3 days. `seen` (on `/cells`) and `last_seen` (on `/tambon`) are that: the shortest layer holding it.
 A cell missing from the shorter layers may also simply have had no scene over it lately, so say "water last seen
-…", never "dried up".
+…", never "dried up". Each scene covers only a strip of the country, so a place gets a pass every 2–3 days and the
+3-day layer is sparse (1,570 cells against the 7-day layer's 88,972 on 2026-10-20): the web map shades "this week"
+(`3days` or `7days`) against "only 8–30 days ago" (`30days`), and shows the 3-day figure only in the tambon card.
 
 ### `GET /api/flood/areas?period=3days&level=province&province=&amphoe=&limit=100` → `FloodAreas`
 Flooded area per area, largest first, and the total over the same filter.
