@@ -90,3 +90,61 @@ def test_parse_rejects_unknown_intent():
     u = understand.parse('{"intent": "risk", "place": {"province": "กรุงเทพ", "tambon": "ลุมพินี"}, "saved": "ร้าน"}',
                          "x", ["บ้าน"])
     assert u.place.tambon == "ลุมพินี" and u.saved is None
+
+
+def _shop(conn, ext):  # noqa: F811
+    """A user with "ร้านส้มตำ" saved in Mueang Chiang Rai (from its name) and a home in Bang Ban."""
+    from agent import tools
+    uid = tools.get_or_create_user(conn, ext)
+    tools.save_location(conn, uid, "บ้าน", 14.41, 100.46, notes=chat.APPROX_NOTE + "อ.บางบาล จ.พระนครศรีอยุธยา")
+    tools.save_location(conn, uid, "ร้านส้มตำ", 19.91, 99.84, notes=chat.APPROX_NOTE + "อ.เมืองเชียงราย จ.เชียงราย")
+    return uid
+
+
+def _labels(conn, uid):  # noqa: F811
+    return sorted(r[0] for r in conn.execute("SELECT label FROM user_locations WHERE user_id = %s", (uid,)))
+
+
+def test_saved_place_by_name_is_not_saved_again(conn, fake_llm):  # noqa: F811
+    """"ร้านส้มตำมีหมา": the LLM names the saved place but also guesses its area under a generic label "ร้าน".
+    That is the saved ร้านส้มตำ, not a new place called "ร้าน"."""
+    risk.compute_all(conn, NOW)
+    uid = _shop(conn, "U-shop")
+    msg = "ร้านส้มตำมีหมา"
+    fake_llm[msg] = {"intent": "risk", "saved": "ร้านส้มตำ",
+                     "place": {"label": "ร้าน", "province": "เชียงราย", "amphoe": "เมืองเชียงราย"},
+                     "facts": {"household": {"pets": ["หมา"]}}}
+    r = chat.handle(conn, "U-shop", "web", text=msg)
+    assert _labels(conn, uid) == ["บ้าน", "ร้านส้มตำ"]
+    assert r.place and r.place["label"] == "ร้านส้มตำ" and "บันทึก \"ร้าน\"" not in r.text
+
+
+def test_saved_place_by_name_without_llm(conn):  # noqa: F811
+    """The rules alone: "ร้านส้มตำมีหมา จะท่วมไหม" is the saved ร้านส้มตำ, not an unsaved "ร้านส้มตำมีหมา"."""
+    risk.compute_all(conn, NOW)
+    uid = _shop(conn, "U-shop2")
+    r = chat.handle(conn, "U-shop2", "web", text="ร้านส้มตำมีหมา จะท่วมไหม")
+    assert r.place and r.place["label"] == "ร้านส้มตำ" and "ยังไม่ได้บันทึก" not in r.text
+    assert _labels(conn, uid) == ["บ้าน", "ร้านส้มตำ"]
+
+
+def test_saved_place_given_a_new_area_moves(conn, fake_llm):  # noqa: F811
+    """Saying where a saved place is still moves it: "ร้านส้มตำอยู่บางบาล" is the same label, a new point."""
+    risk.compute_all(conn, NOW)
+    uid = _shop(conn, "U-shop3")
+    msg = "ร้านส้มตำอยู่บางบาล อยุธยา"
+    fake_llm[msg] = {"intent": "remember", "saved": "ร้านส้มตำ",
+                     "place": {"label": "ร้านส้มตำ", "province": "พระนครศรีอยุธยา", "amphoe": "บางบาล"}}
+    chat.handle(conn, "U-shop3", "web", text=msg)
+    assert _labels(conn, uid) == ["บ้าน", "ร้านส้มตำ"]
+    lat = conn.execute("SELECT lat FROM user_locations WHERE user_id = %s AND label = 'ร้านส้มตำ'", (uid,)).fetchone()[0]
+    assert lat < 15
+
+
+def test_saved_places_reach_the_llm_with_their_area(conn, fake_llm, monkeypatch):  # noqa: F811
+    seen = {}
+    real = llm.chat
+    monkeypatch.setattr(llm, "chat", lambda messages, **kw: seen.setdefault("user", messages[1]["content"]) and real(messages, **kw))
+    _shop(conn, "U-shop4")
+    chat.handle(conn, "U-shop4", "web", text="สวัสดี")
+    assert "ร้านส้มตำ (อ.เมืองเชียงราย จ.เชียงราย)" in seen["user"]

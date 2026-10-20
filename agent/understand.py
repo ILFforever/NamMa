@@ -51,6 +51,10 @@ Places: Thai names exactly as officially written. The เมือง district o
 names the message states or plainly implies; never guess a district that is not mentioned. Use "label" only when the
 message says whose place it is ("บ้านแฟนอยู่…", "my friend's house is in…").
 
+Saved places: when the message refers to one of the saved places listed, set "saved" to its exact label and leave
+"place" null: its area is already known. Never shorten a saved name ("ร้านส้มตำมีหมา" means the saved "ร้านส้มตำ",
+not a new "ร้าน"). Fill "place" for a saved place only when the message gives it a new location ("ร้านส้มตำอยู่…").
+
 Facts (omit what is not stated; {} if nothing):
 {"household": {"immobile": [who], "elderly": true, "children": true, "pregnant": true, "pets": [kind]},
  "needs": {"dialysis": true, "oxygen": true, "medication": true, "power_dependent": true},
@@ -80,11 +84,14 @@ class Understanding:
     reply: str | None = None            # intent other: a short answer, checked by safe_reply
 
 
-def read(text: str, hint: str, saved_labels: list[str], recent: list[dict]) -> Understanding | None:
+def read(text: str, hint: str, saved_labels: list[str], recent: list[dict],
+         areas: dict[str, str] | None = None) -> Understanding | None:
+    """areas: a saved label → the area it was placed from ("อ.เมืองเชียงราย จ.เชียงราย"); GPS shares have none."""
     if not llm.available():
         return None
     convo = "\n".join(f"{m['role']}: {m['content'][:200]}" for m in recent[-6:]) or "-"
-    user = (f"Saved places: {', '.join(saved_labels) or '-'}\nRecent conversation:\n{convo}\n"
+    saved = ", ".join(f"{l} ({areas[l]})" if areas and areas.get(l) else l for l in saved_labels) or "-"
+    user = (f"Saved places: {saved}\nRecent conversation:\n{convo}\n"
             f"Rule-based guess: {hint}\n\nMessage: {text}")
     out = llm.chat([{"role": "system", "content": SYSTEM}, {"role": "user", "content": user}],
                    temperature=0, max_tokens=700, timeout=15)
