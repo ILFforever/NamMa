@@ -3,8 +3,8 @@
     python -m ingest.gistda_flood                  # every layer once (3-day, 7-day, then 30-day)
     python -m ingest.gistda_flood --period 3days
     python -m ingest.gistda_flood --force          # re-store both even if unchanged (after a parser fix)
-    python -m ingest.gistda_flood --every 10800    # loop; the API starts this as its own low-priority process
-                                                   # when SCHEDULER=1 and a key is set (supervise below)
+    python -m ingest.gistda_flood --every 10800    # loop in one process; the API instead starts a fresh low-priority
+                                                   # process per run when SCHEDULER=1 and a key is set (supervise)
 
 GET https://api-gateway.gistda.or.th/api/2.0/resources/features/flood/{3days|7days|30days}?limit=&offset=
 (OGC API Features, needs GISTDA_API_KEY). One GeoJSON feature per flooded H3 cell (res 9, ~0.1 km²).
@@ -442,14 +442,18 @@ def loop(every: int, periods=PERIODS) -> None:
 
 
 def supervise(every: int) -> None:
-    """For the API (api/main.py): run `loop` in its own process at low priority and start it again if it ends. A
-    7-day layer is minutes of download and parsing, which in the API's own process slowed the site. The child
-    shares the API's systemd unit, so stopping or restarting the API stops it too."""
-    cmd = ["nice", "-n", "10", sys.executable, "-m", "ingest.gistda_flood", "--every", str(every)]
+    """For the API (api/main.py): every `every` seconds, fetch the layers once in a fresh process at low priority. A
+    7-day layer is minutes of download and parsing, which in the API's own process slowed the site; and a process
+    that stays up keeps its peak memory (~500 MB after a 30-day layer) through the hours until the next fetch, while
+    one that exits hands it back. A run that fails is simply tried again at the next round. The child shares the
+    API's systemd unit, so stopping or restarting the API stops it too."""
+    cmd = ["nice", "-n", "10", sys.executable, "-m", "ingest.gistda_flood"]
     while True:
+        started = time.monotonic()
         code = subprocess.Popen(cmd, cwd=ROOT).wait()
-        print(f"gistda fetcher exited with {code}, starting it again in 60 s", flush=True)
-        time.sleep(60)
+        if code:
+            print(f"gistda fetcher exited with {code}; next try at the next round", flush=True)
+        time.sleep(max(60, every - (time.monotonic() - started)))
 
 
 def main() -> None:
