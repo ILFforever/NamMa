@@ -342,8 +342,8 @@ Inside the LINE app the page has a LIFF ID token and uses `POST /api/auth/line`.
 backend runs LINE Login itself, so the session lands in that browser:
 1. `POST /api/auth/line/start` `{ intent: "login" | "link", chat_session? }` → `{ authorize_url }`. Sets the
    `namma_line_state` cookie (HttpOnly, 10 min). `link` needs a session. **503** without `LINE_LOGIN_CHANNEL_ID` and
-   `LINE_LOGIN_CHANNEL_SECRET`. The page sends the browser to `authorize_url`. It has `disable_auto_login=true`:
-   LINE's jump from Safari or Chrome to the LINE app fails ("unknown error"), so LINE logs in on its web page.
+   `LINE_LOGIN_CHANNEL_SECRET`. The page sends the browser to `authorize_url`. LINE's page hands the login to
+   the LINE app when there is one (its web form needs an email and password on the LINE account).
 2. LINE sends the browser to `GET /api/auth/line/callback` (register `<PUBLIC_URL>/api/auth/line/callback` as a
    Callback URL on the LINE Login channel; `PUBLIC_URL` defaults to the forwarded scheme and host). It signs in
    (or links) and redirects to `/?line_claim=<one-time>#/account`, or `/?line_error=<code>#/account`:

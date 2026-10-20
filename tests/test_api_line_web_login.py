@@ -48,7 +48,7 @@ def back(r):
 def test_signs_in_through_line_in_the_same_browser(line):
     client, conn, fake = line
     q = start(client, fake, chat_session="browser-1")
-    assert q["client_id"] == ["1234"] and q["scope"] == ["openid profile"] and q["disable_auto_login"] == ["true"]
+    assert q["client_id"] == ["1234"] and q["scope"] == ["openid profile"] and "disable_auto_login" not in q
     assert q["redirect_uri"] == ["http://testserver/api/auth/line/callback"]
 
     path, query, frag = back(client.get("/api/auth/line/callback", params={"code": "c", "state": q["state"][0]},

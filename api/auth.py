@@ -286,10 +286,9 @@ def line_start(body: LineStartIn, request: Request, response: Response, user: di
                         httponly=True, secure=_https(request), samesite="lax")
     url = "https://access.line.me/oauth2/v2.1/authorize?" + urlencode({
         "response_type": "code", "client_id": channel, "redirect_uri": _line_callback_url(request),
-        "state": state, "scope": "openid profile", "nonce": nonce,
-        # Stay on LINE's login page in this browser: its jump to the LINE app ("auto login") fails with "unknown
-        # error" in the LINE app, from Safari and Chrome (a browser that can't open apps, like Discord's, works).
-        "disable_auto_login": "true"})
+        # No disable_auto_login: LINE's page hands the login to the LINE app and back to this browser. Without the
+        # app, LINE's web form needs an email + password on the LINE account, which many people don't have (445).
+        "state": state, "scope": "openid profile", "nonce": nonce})
     return envelope(conn, {"authorize_url": url})
 
 
