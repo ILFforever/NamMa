@@ -1,4 +1,4 @@
-"""GISTDA satellite flood extent → flood_cells. The only module that downloads GISTDA's flood layers.
+"""GISTDA satellite flood extent → flood_cells (each layer as sent) and flood_extent (what the API reads). The only module that downloads GISTDA's flood layers.
 
     python -m ingest.gistda_flood                  # every layer once (3-day, 7-day, then 30-day)
     python -m ingest.gistda_flood --period 3days
@@ -344,11 +344,22 @@ COLS = ("period", "h3", "h3_r5", "h3_r6", "h3_r7", "h3_r8", "lat", "lon", "area_
         "province", "amphoe", "tambon", "observed_at", "buildings", "population", "schools", "hospitals", "props")
 HISTORY_COLS = ("h3", "lat", "lon", "area_km2", "pv_code", "ap_code", "tb_code", "observed_at", "buildings",
                 "population", "schools", "hospitals")
+EXTENT_COLS = COLS[:-1]                  # everything but GISTDA's other attributes
+_LEN = "(VALUES ('3days', 1), ('7days', 2), ('30days', 3))"
+# flood_extent (migration 010): per period, each cell's largest flooded area in that layer or a shorter one, so the
+# 30-day figure is the most water seen within 30 days and never less than the week's. Only fetched periods.
+EXTENT_SQL = (
+    f"INSERT INTO flood_extent ({', '.join(EXTENT_COLS)}) "
+    f"SELECT DISTINCT ON (w.period, c.h3) w.period, {', '.join('c.' + col for col in EXTENT_COLS[1:])} "
+    f"FROM {_LEN} AS w (period, len) JOIN {_LEN} AS l (period, len) ON l.len <= w.len "
+    f"JOIN flood_cells c ON c.period = l.period WHERE w.period IN (SELECT period FROM flood_fetches) "
+    f"ORDER BY w.period, c.h3, c.area_km2 DESC, l.len")
 
 
 def store(conn, period: str, rows: list[dict], fp: str | None, unit: str) -> dict:
-    """Replace the period's cells with this layer, log the fetch, and make the layer today's copy in
-    flood_cells_history. The caller commits."""
+    """Replace the period's cells with this layer, log the fetch, rebuild flood_extent (a shorter layer changes the
+    longer ones' figures too), and make every period's extent today's copy in flood_cells_history. The caller
+    commits."""
     conn.execute("DELETE FROM flood_cells WHERE period = %s", (period,))
     with conn.cursor() as cur, cur.copy(f"COPY flood_cells ({', '.join(COLS)}) FROM STDIN") as copy:
         for r in rows:                       # props may already be JSON text (run_once keeps them that way)
@@ -361,17 +372,20 @@ def store(conn, period: str, rows: list[dict], fp: str | None, unit: str) -> dic
     since = [w for r in rows if (w := r.get("scene_from") or r["observed_at"])]
     summary = {"period": period, "cells": len(rows), "area_km2": round(sum(r["area_km2"] for r in rows), 4),
                "observed_from": min(since, default=None), "observed_to": max(seen, default=None)}
-    fetch_id = conn.execute(
+    conn.execute(
         "INSERT INTO flood_fetches (period, cells, area_km2, observed_from, observed_to, fingerprint, "
         "area_unit, by_province) VALUES (%(period)s, %(cells)s, %(area_km2)s, %(observed_from)s, "
         "%(observed_to)s, %(fp)s, %(unit)s, %(by_province)s) RETURNING id",
         {**summary, "fp": fp, "unit": unit,
-         "by_province": Jsonb({k: round(v, 4) for k, v in sorted(by_province.items())})}).fetchone()[0]
+         "by_province": Jsonb({k: round(v, 4) for k, v in sorted(by_province.items())})})
+    conn.execute("DELETE FROM flood_extent")
+    conn.execute(EXTENT_SQL)
     day = datetime.now(BKK).date()
     cols = ", ".join(HISTORY_COLS)
-    conn.execute("DELETE FROM flood_cells_history WHERE day = %s AND period = %s", (day, period))
+    conn.execute("DELETE FROM flood_cells_history WHERE day = %s", (day,))
     conn.execute(f"INSERT INTO flood_cells_history (day, period, fetch_id, {cols}) "
-                 f"SELECT %s, period, %s, {cols} FROM flood_cells WHERE period = %s", (day, fetch_id, period))
+                 f"SELECT %s, e.period, f.id, {', '.join('e.' + c for c in HISTORY_COLS)} FROM flood_extent e "
+                 "JOIN (SELECT period, max(id) AS id FROM flood_fetches GROUP BY period) f USING (period)", (day,))
     return {**summary, "day": day}
 
 

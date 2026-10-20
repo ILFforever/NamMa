@@ -74,7 +74,7 @@ def _nearby(cur, period: str, lat: float, lon: float) -> list[tuple[float, dict]
     """(km, cell) for the period's flooded cells within NEAR_KM of the point."""
     dlat = NEAR_KM / 111.0
     dlon = NEAR_KM / (111.0 * max(math.cos(math.radians(lat)), 0.1))
-    rows = cur.execute("SELECT h3, lat, lon, area_km2 FROM flood_cells WHERE period = %s "
+    rows = cur.execute("SELECT h3, lat, lon, area_km2 FROM flood_extent WHERE period = %s "
                        "AND lat BETWEEN %s AND %s AND lon BETWEEN %s AND %s",
                        (period, lat - dlat, lat + dlat, lon - dlon, lon + dlon)).fetchall()
     near = [(haversine_km(lat, lon, r["lat"], r["lon"]), r) for r in rows]
