@@ -20,6 +20,9 @@ Switch the web app to the real backend with `VITE_API_MODE=http` (the dev server
 - **Numbers come from data only** (CLAUDE.md §2). Distances are computed server-side. Unknown values are `null`, never a guess.
 - **Auth:** `Authorization: Bearer <session_token>` from `POST /api/auth/line`.
 - **Shared state:** web and LINE use the same `users` row (same LINE userId).
+- **Station alerts on LINE:** a station's page opens the OA chat (`https://line.me/R/oaMessage/%40<id>/?<text>`) with
+  `แจ้งเตือนสถานี <code> #<station id>` filled in (namma-web `copy.station.lineAlert.message`, agent `STATION_ALERT_RE`).
+  Sent, it saves the station as a place labelled `สถานี <code>` whose alerts follow that station alone.
 
 ## Stations
 
