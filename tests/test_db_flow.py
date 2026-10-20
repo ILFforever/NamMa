@@ -257,3 +257,32 @@ def test_alert_pushes_only_to_real_line_ids(conn, monkeypatch):
     demo = tools.get_or_create_user(conn, "demo:responder")
     assert conn.execute("SELECT count(*) FROM messages WHERE user_id = %s AND channel = 'alert'", (demo,)).fetchone()[0] == 1
     assert alerts.run(conn, NOW + timedelta(minutes=4)) == []                # recorded, so no retry every run
+
+
+def test_station_page_message_pins_alerts_to_that_station(conn):
+    # "แจ้งเตือนสถานี T.1 #9001" is what the web's station page fills in for LINE (namma-web copy.station.lineAlert).
+    near = 9003                                                              # 4 km from T.1, no edge to it
+    conn.execute("INSERT INTO stations (id, oldcode, name_th, lat, lon, river, agency) "
+                 "VALUES (%s, 'T.3', 'สถานีT.3', 14.45, 100.46, 'แม่น้ำทดสอบ', 'RID')", (near,))
+    for h in range(4):
+        conn.execute("INSERT INTO waterlevel_readings (station_id, ts, level_msl, diff_wl_bank) VALUES (%s, %s, 6.0, -1.0)",
+                     (near, NOW - timedelta(hours=3 - h)))
+    risk.compute_all(conn, NOW)
+    assert chat.handle(conn, "U-st", "line", text="แจ้งเตือนสถานี #123").text.startswith("ไม่พบสถานี")
+
+    r = chat.handle(conn, "U-st", "line", text=f"แจ้งเตือนสถานี T.1 #{DOWN}")
+    assert r.text.startswith("📍 สถานี T.1") and "บันทึก \"สถานี T.1\" ไว้แล้ว" in r.text and "1784" in r.text
+    assert r.place["saved_label"] == "สถานี T.1" and r.sources[0]["station_id"] == DOWN
+    uid = tools.get_or_create_user(conn, "U-st")
+    assert [(l["label"], l["station_id"]) for l in tools.get_user_profile(conn, uid)["locations"]] == [("สถานี T.1", DOWN)]
+
+    # A plain place at the same point hears of the riskier station nearby; the pinned one waits for its own station.
+    tools.save_location(conn, tools.get_or_create_user(conn, "U-plain"), "บ้าน", 14.41, 100.46)
+    _set_over_bank(conn, near, 0.3)
+    assert [(s["station"], s["tier"]) for s in alerts.run(conn, NOW + timedelta(minutes=3))] == [("T.3", "danger")]
+    _set_over_bank(conn, DOWN, 0.1)
+    assert [(s["station"], s["tier"]) for s in alerts.run(conn, NOW + timedelta(minutes=4))] == [("T.1", "danger")]
+
+    # Saving the same label again from a GPS share or a place name drops the pin.
+    tools.save_location(conn, uid, "สถานี T.1", 14.41, 100.46)
+    assert tools.get_user_profile(conn, uid)["locations"][0]["station_id"] is None

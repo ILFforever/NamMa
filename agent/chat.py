@@ -123,6 +123,9 @@ ALERT_RE = re.compile(r"เตือน(ฉัน|หน่อย|ด้วย|�
 ALERT_TEXT = ("🔔 น้ำมาแจ้งเตือนทาง LINE อัตโนมัติ เมื่อสถานีวัดน้ำใกล้สถานที่ที่บันทึกไว้มีความเสี่ยงสูงขึ้น "
               "(ยังตั้งระดับน้ำเองไม่ได้)\nบันทึกสถานที่ได้โดยพิมพ์ เช่น \"บ้านอยู่บางบาล อยุธยา\" หรือกดแชร์ตำแหน่ง\n"
               "ประกาศเตือนภัยอย่างเป็นทางการ ติดตามจาก ปภ. 1784 • LINE @1784DDPM")
+# What the web's station page fills in for the LINE chat (namma-web copy.station.lineAlert.message): save that
+# station as a place whose alerts follow it alone (agent/alerts.py). The id after "#" is ThaiWater's station.id.
+STATION_ALERT_RE = re.compile(r"แจ้งเตือนสถานี(?:\s+\S+)?\s+#(\d+)")
 LIVESTOCK_RE = re.compile(r"วัว|ควาย|หมู|ไก่|เป็ด|แพะ|ปศุสัตว์|livestock|\bcows?\b", re.I)
 NO_RIDE_RE = re.compile(r"ไม่มีรถ|ไม่มีใครพา|ไปเองไม่ได้|ไปไม่ได้|ไม่มีคนพา|no car|no ride", re.I)
 HERE_RE = re.compile(r"ตรงนี้|ที่นี่|ตำแหน่งนี้|here")
@@ -253,6 +256,8 @@ def _route(conn, uid: int, text: str, location) -> Reply:
             text, sources, swaps = _assess(conn, uid, lat, lon, label, False)
             return Reply(em.text + "\n\n" + text, sources=sources, emergency=True, web_swaps=swaps)
         return _on_location(conn, uid, location)
+    if m := STATION_ALERT_RE.fullmatch(t):
+        return _station_alert(conn, uid, int(m.group(1)))
     if SET_HOME_RE.fullmatch(t):
         t = SET_HOME
     elif ADD_PLACE_RE.fullmatch(t):
@@ -779,6 +784,22 @@ def _on_location(conn, uid: int, location) -> Reply:
     lat, lon = location
     label = _save_shared(conn, uid, lat, lon)
     text, sources, swaps = _assess(conn, uid, lat, lon, label, approx=False, saved=label)
+    return Reply(text, [PROFILE_Q], sources=sources, web_swaps=swaps,
+                 place={"label": label, "lat": lat, "lon": lon, "approx": False, "saved_label": label})
+
+
+def _station_alert(conn, uid: int, station_id: int) -> Reply:
+    """"แจ้งเตือนสถานี C.35 #2609" from the web: save the station as a place pinned to it, then answer for it."""
+    row = conn.execute("SELECT oldcode, name_th, lat, lon FROM stations WHERE id = %s", (station_id,)).fetchone()
+    if not row or row[2] is None:
+        return Reply("ไม่พบสถานีวัดน้ำนี้ค่ะ ลองบอกชื่อตำบล อำเภอ จังหวัด หรือกดแชร์ตำแหน่ง "
+                     "แล้วน้ำมาจะแจ้งเตือนจากสถานีใกล้ที่สุดให้", [LOCATION_Q])
+    code, name, lat, lon = row
+    label = f"สถานี {answer.display_code(code) or name}"[:17]     # "ลบ <label>" must fit a 20-character quick reply
+    _clear_await(conn, uid)
+    tools.save_location(conn, uid, label, lat, lon, station_id=station_id)
+    note = f"📌 บันทึก \"{label}\" ไว้แล้ว ถ้าระดับเสี่ยงที่สถานีนี้สูงขึ้น จะส่งข้อความเตือน"
+    text, sources, swaps = _assess(conn, uid, lat, lon, label, False, [note])
     return Reply(text, [PROFILE_Q], sources=sources, web_swaps=swaps,
                  place={"label": label, "lat": lat, "lon": lon, "approx": False, "saved_label": label})
 
