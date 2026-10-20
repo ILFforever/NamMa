@@ -87,6 +87,11 @@ def assess(station_id: int, readings: list[tuple[datetime, float, float | None, 
     ts, level, diff, sit = readings[-1]
     series = [(t, lv) for t, lv, _, _ in readings]
     t3, t12 = trend(series, 3), trend(series, 12)
+    t1 = trend(series, 1)
+    if t3 is not None and t1 is not None and t1 < 0 < t3:
+        # A jump early in the window (a surge or a sensor spike) tilts the 3 h fit upward while the water is
+        # already falling: AIT001 jumped 92 cm in 10 min, then fell for an hour, and read "+25 cm/h, bank in 3 h".
+        t3 = t1
     tier, h = classify(diff, sit, t3, bool(upstream_over_bank))
     return StationRisk(station_id, now, ts, level, diff, sit, t3, t12, h, upstream_over_bank, tier)
 
