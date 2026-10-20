@@ -222,7 +222,8 @@ def record_consent(conn, user_id: int, granted: bool, kind: str = "sensitive_mem
 def get_user_profile(conn, user_id: int) -> dict:
     mem = _rows(conn, "SELECT household, house, assets, needs, history, preferences FROM user_memory WHERE user_id = %s",
                 (user_id,))
-    locs = _rows(conn, "SELECT id, label, lat, lon, notes, facts, pending FROM user_locations WHERE user_id = %s "
+    locs = _rows(conn, "SELECT id, label, lat, lon, notes, station_id, facts, pending FROM user_locations "
+                       "WHERE user_id = %s "
                        "ORDER BY id", (user_id,))
     pending = _rows(conn, "SELECT facts FROM pending_facts WHERE user_id = %s", (user_id,))
     pending = pending[0]["facts"] if pending else {}
@@ -307,15 +308,18 @@ def forget(conn, user_id: int, what: str, where: str = "everywhere") -> None:
         conn.execute(f"UPDATE user_memory SET {what} = '{{}}', updated_at = now() WHERE user_id = %s", (user_id,))
 
 
-def save_location(conn, user_id: int, label: str, lat: float, lon: float, notes: str | None = None) -> int:
-    """Upsert by label so "บ้านแม่" said twice stays one place."""
+def save_location(conn, user_id: int, label: str, lat: float, lon: float, notes: str | None = None,
+                  station_id: int | None = None) -> int:
+    """Upsert by label so "บ้านแม่" said twice stays one place. station_id pins its alerts to one station; a place
+    saved again without one goes back to the nearest-station rule."""
     row = conn.execute("SELECT id FROM user_locations WHERE user_id = %s AND label = %s", (user_id, label)).fetchone()
     if row:
-        conn.execute("UPDATE user_locations SET lat = %s, lon = %s, notes = COALESCE(%s, notes) WHERE id = %s",
-                     (lat, lon, notes, row[0]))
+        conn.execute("UPDATE user_locations SET lat = %s, lon = %s, notes = COALESCE(%s, notes), station_id = %s "
+                     "WHERE id = %s", (lat, lon, notes, station_id, row[0]))
         return row[0]
-    return conn.execute("INSERT INTO user_locations (user_id, label, lat, lon, notes) VALUES (%s, %s, %s, %s, %s) "
-                        "RETURNING id", (user_id, label, lat, lon, notes)).fetchone()[0]
+    return conn.execute("INSERT INTO user_locations (user_id, label, lat, lon, notes, station_id) "
+                        "VALUES (%s, %s, %s, %s, %s, %s) RETURNING id",
+                        (user_id, label, lat, lon, notes, station_id)).fetchone()[0]
 
 
 def log_message(conn, user_id: int, channel: str, role: str, content: str) -> int:

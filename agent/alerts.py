@@ -1,5 +1,7 @@
 """Alert job (CLAUDE.md §8): after each risk refresh, push when a saved location's tier rises.
 
+A place takes the riskiest station within NEAR_KM, or only its own station when it was saved from a station's page.
+
 Push only on a tier increase, or every 6 h while at danger. Quiet hours hold back everything but
 danger. Web-only users get the alert as a message in their chat history instead of a LINE push.
 """
@@ -69,8 +71,17 @@ def run(conn, now: datetime | None = None) -> list[dict]:
         stations = tools.get_nearest_stations(conn, loc["lat"], loc["lon"], k=3)
         if not stations:
             continue
-        near = [s for s in stations if s["distance_km"] <= NEAR_KM] or stations[:1]
-        st = max(near, key=lambda s: rank(s["risk_tier"]))
+        if sid := loc["station_id"]:
+            # Saved from a station's page: that station alone. It sits at the point, so it is among the nearest
+            # unless its reading is stale; ThaiWater's prefixed twin of an RID station ("ridhydro_C.36") counts too.
+            code = answer.display_code(conn.execute("SELECT oldcode FROM stations WHERE id = %s", (sid,)).fetchone()[0])
+            st = next((s for s in stations if s["station_id"] == sid
+                       or (code and answer.display_code(s["code"]) == code)), None)
+            if not st:
+                continue
+        else:
+            near = [s for s in stations if s["distance_km"] <= NEAR_KM] or stations[:1]
+            st = max(near, key=lambda s: rank(s["risk_tier"]))
         last = conn.execute("SELECT risk_tier, ts FROM alerts_sent WHERE location_id = %s ORDER BY ts DESC LIMIT 1",
                             (loc["id"],)).fetchone()
         prof = tools.get_user_profile(conn, loc["user_id"])

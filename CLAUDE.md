@@ -157,8 +157,9 @@ rain_readings(station_id, ts, rain_1h, rain_24h, PRIMARY KEY(station_id, ts))
 station_risk(station_id PK, computed_at, level, trend_cm_per_hr, hours_to_bank, risk_tier, forecast_json)
 
 users(id PK, line_user_id UNIQUE, display_name, language DEFAULT 'th', created_at)
-user_locations(id PK, user_id, label, lat, lon, notes,          -- "บ้าน", "บ้านแม่ บางระกำ"
-               facts JSONB, pending JSONB)                      -- facts about this place only (§7)
+user_locations(id PK, user_id, label, lat, lon, notes, station_id,  -- "บ้าน", "บ้านแม่ บางระกำ"; station_id: saved
+               facts JSONB, pending JSONB)                         -- from a station's page, alerts follow it alone;
+                                                                   -- facts: about this place only (§7)
 user_memory(user_id PK, household JSONB, house JSONB, assets JSONB, needs JSONB,
             history JSONB, preferences JSONB, updated_at)
 consents(user_id, kind, granted BOOLEAN, ts)                     -- kind: 'sensitive_memory', 'alerts'
