@@ -287,4 +287,4 @@ real risk. Both need a signed-in session (demo login is enough) and answer 403 w
 
 - **`station_edges`** has only RID stations, and `approx_travel_hours` is NULL until estimated.
 - **GISTDA property names** are not documented. `ingest/gistda_flood.py` looks for each field under the names other
-  projects report and archives the first page of each new layer; check the parser against one once we have a key.
+  projects report and keeps every page of each stored layer (`var/raw/gistda/flood`); check the parser against one.

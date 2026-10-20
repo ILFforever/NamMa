@@ -178,6 +178,10 @@ def test_fingerprint_ignores_timestamp_and_links(small_pages):
 
 # --- storing, API, chat (Postgres) -------------------------------------------------------------------
 
+def _snapshots(tmp_path, period="3days"):
+    return sorted((tmp_path / "gistda" / "flood" / period).iterdir())
+
+
 def _store_layer(conn, monkeypatch, tmp_path, pages, period="3days", total=None):
     monkeypatch.setattr(gf, "RAW_DIR", tmp_path)
     client, seen = _gistda(pages, total=total if total is not None else sum(len(p) for p in pages.values()))
@@ -192,13 +196,20 @@ def test_run_once_stores_the_layer_and_skips_an_unchanged_one(api, monkeypatch, 
     assert conn.execute("SELECT count(*), count(DISTINCT h3_r7) FROM flood_cells WHERE period = '3days'").fetchone()[0] == 7
     unit, by_prov = conn.execute("SELECT area_unit, by_province FROM flood_fetches").fetchone()
     assert unit == "m2" and list(by_prov) == ["พระนครศรีอยุธยา"]
-    [raw] = (tmp_path / "gistda").glob("flood_3days_*.json.gz")
-    text = gzip.open(raw, "rt", encoding="utf-8").read()
-    assert KEY not in text and "links" not in json.loads(text)
+    [snap] = _snapshots(tmp_path)
+    assert snap.suffix == "" and sorted(p.name for p in snap.iterdir()) == [
+        "0000000.json.gz", "0000003.json.gz", "0000006.json.gz"]
+    for page in snap.iterdir():
+        text = gzip.open(page, "rt", encoding="utf-8").read()
+        assert KEY not in text and "links" not in json.loads(text)
+    today = datetime.now(gf.BKK).date()
+    assert summary["day"] == today
+    assert conn.execute("SELECT day, count(*) FROM flood_cells_history GROUP BY day").fetchall() == [(today, 7)]
 
     again, seen = _store_layer(conn, monkeypatch, tmp_path, small_pages)
     assert again is None and len(seen) == 1                        # only the first page was asked for
     assert conn.execute("SELECT count(*) FROM flood_fetches").fetchone()[0] == 1
+    assert len(_snapshots(tmp_path)) == 1
 
 
 def test_a_failed_download_keeps_the_stored_layer(api, monkeypatch, tmp_path, small_pages):
@@ -208,6 +219,55 @@ def test_a_failed_download_keeps_the_stored_layer(api, monkeypatch, tmp_path, sm
     with pytest.raises(gf.GistdaError):
         _store_layer(conn, monkeypatch, tmp_path, changed, total=99)
     assert conn.execute("SELECT count(*) FROM flood_cells").fetchone()[0] == 7
+    assert conn.execute("SELECT count(*) FROM flood_cells_history").fetchone()[0] == 7
+    assert [d.suffix for d in _snapshots(tmp_path)] == [""]                           # no partial snapshot left
+
+
+def test_history_keeps_one_copy_per_day(api, monkeypatch, tmp_path, small_pages):
+    _, conn = api
+    _store_layer(conn, monkeypatch, tmp_path, small_pages)
+    conn.execute("UPDATE flood_cells_history SET day = day - 1")                       # make it yesterday's copy
+    _store_layer(conn, monkeypatch, tmp_path, {0: _layer(3, at=(14.6, 100.5))})
+    today = datetime.now(gf.BKK).date()
+    by_day = "SELECT day, count(*) FROM flood_cells_history GROUP BY day ORDER BY day"
+    assert conn.execute(by_day).fetchall() == [(today - timedelta(days=1), 7), (today, 3)]
+    _store_layer(conn, monkeypatch, tmp_path, small_pages)                             # a later layer the same day
+    assert conn.execute(by_day).fetchall() == [(today - timedelta(days=1), 7), (today, 7)]
+    assert len(_snapshots(tmp_path)) == 3                                              # every stored layer's pages
+
+
+def test_old_and_partial_snapshots_are_dropped(api, monkeypatch, tmp_path, small_pages):
+    _, conn = api
+    root = tmp_path / "gistda" / "flood" / "3days"
+    (root / "20200101_000000_000000").mkdir(parents=True)                             # past GISTDA_SNAPSHOT_KEEP_DAYS
+    (root / "20991231_000000_000000.partial").mkdir()                                  # a run stopped part-way
+    _store_layer(conn, monkeypatch, tmp_path, small_pages)
+    [snap] = _snapshots(tmp_path)
+    assert snap.name not in ("20200101_000000_000000", "20991231_000000_000000") and snap.suffix == ""
+
+
+def test_supervise_runs_the_loop_in_a_low_priority_process(monkeypatch):
+    started = []
+
+    class Stop(Exception):
+        pass
+
+    class FakeProcess:
+        def __init__(self, cmd, cwd):
+            started.append(cmd)
+
+        def wait(self):
+            return 1                                                                   # the fetcher died
+
+    def sleep(_seconds):
+        raise Stop
+
+    monkeypatch.setattr(gf.subprocess, "Popen", FakeProcess)
+    monkeypatch.setattr(gf.time, "sleep", sleep)
+    with pytest.raises(Stop):
+        gf.supervise(10800)
+    [cmd] = started
+    assert cmd[:3] == ["nice", "-n", "10"] and cmd[4:] == ["-m", "ingest.gistda_flood", "--every", "10800"]
 
 
 def test_flood_areas(api, monkeypatch, tmp_path, small_pages):

@@ -108,8 +108,9 @@ gateway answers 407; with a bad one 401 `INVALID_API_KEY` (checked 2026-10-19, a
   `{"result": "not found"}`. Client: `agent/gistda.py`.
 
 **Not yet checked against a response of ours** (no key yet): the field names come from other projects' write-ups.
-The parsers look for each field under the reported names, and the first page of each new layer and every recurrence
-response are archived (key removed) under `var/raw/gistda`. Check them once a key is in `.env`.
+The parsers look for each field under the reported names. Every page of each stored flood layer is kept (key removed)
+under `var/raw/gistda/flood/<period>/<time>/` for `GISTDA_SNAPSHOT_KEEP_DAYS` (90), and its cells for good in
+`flood_cells_history`, one copy per period per day. Check the parser against them once a key is in `.env`.
 
 ### 4.5 No API (handle manually)
 - ~~Shelters: hand-curate a CSV~~ → now from DDPM, see §4.7.

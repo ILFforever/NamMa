@@ -44,8 +44,10 @@ turn on "Use webhook", turn off auto-reply messages. Click Verify.
 - `https://<EIP>.sslip.io/healthz` returns 200. It returns 503 if no risk refresh in 30 min, so point an uptime check at it.
 - Logs: `journalctl -u namma -f`
 - Web app: `https://<EIP>.sslip.io/#/chat`, station map `#/map`, satellite flood map `#/flood`
-- GISTDA: `journalctl -u namma | grep gistda` shows each layer's cells and area, or why it was skipped.
-  The first page of each new layer is kept under `var/raw/gistda` (key removed) to check the parser against.
+- GISTDA: `journalctl -u namma | grep gistda` shows each layer's cells and area, or why it was skipped. The fetch
+  runs as a low-priority child of the API (`ingest.gistda_flood --every`), so it restarts with the service.
+  Every stored layer is kept: all its pages under `var/raw/gistda/flood/<period>/<time>/` (key removed, ~50 MB a
+  7-day layer, dropped after `GISTDA_SNAPSHOT_KEEP_DAYS`, default 90) and its cells in `flood_cells_history`.
 
 ## Moving to RDS later
 Create RDS for PostgreSQL in the same VPC, set `DATABASE_URL` in `/opt/namma/.env`, run
