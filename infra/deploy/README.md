@@ -57,7 +57,8 @@ The first fetch after that deploy downloads the 30-day layer for the first time.
    `ps -o pid,ni,rss,etime,args -u namma | grep -E 'gistda_flood|uvicorn'`
 2. Every stored layer left a snapshot, and none is left half-written (a `*.partial` folder exists only during a fetch):
    `ls /opt/namma/var/raw/gistda/flood/*/ && du -sh /opt/namma/var/raw/gistda/flood/*`
-3. One copy per period per day. **Phase 4 is done when this shows 7 days in a row for each period:**
+3. One copy per period per day (made each 3-hourly round even when no layer changed: the log says
+   `gistda record: today's copy made …`). **Phase 4 is done when this shows 7 days in a row for each period:**
    `sudo -u postgres psql namma -c "SELECT day, period, count(*) AS cells, round(sum(area_km2)) AS km2 FROM flood_cells_history GROUP BY 1, 2 ORDER BY 1, 2"`
 4. The site stays fast during a 30-day download. Watch for one (`journalctl -u namma -f | grep gistda`; the line
    `gistda 30days: … cells … in … s` ends it) and time the API during and outside it:
