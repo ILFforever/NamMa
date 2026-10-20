@@ -28,7 +28,8 @@ Switch the web app to the real backend with `VITE_API_MODE=http` (the dev server
 
 ### `GET /api/stations` → `StationSummary[]`
 All stations the map shows: every station that reported in the last 3 days or has a `station_risk` row (~800,
-all agencies), plus the demo corridor in `data/corridor_stations.csv`. Corridor stations (by `stem_order`) come
+all agencies), plus the demo corridor in `data/corridor_stations.csv`. Left out: ThaiWater's prefixed second listing
+of RID gauges (`ridhydro_C.36`) and coordinates outside Thailand; `/api/stations/{id}` still serves them. Corridor stations (by `stem_order`) come
 first, then the rest by id. ~350 KB of JSON, ~50 KB gzipped (Caddy compresses).
 
 ```jsonc

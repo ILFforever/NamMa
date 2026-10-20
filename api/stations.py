@@ -34,9 +34,16 @@ LEFT JOIN station_risk r ON r.station_id = s.id
 """
 
 # The whole network the map shows: every station that has reported in the last 3 days or has a risk row (~800),
-# plus the demo corridor's CSV stations even when they are quiet. Long-dead stations stay off the map.
+# plus the demo corridor's CSV stations even when they are quiet. Long-dead stations stay off the map, and so do:
+# - ThaiWater's second listing of RID gauges under a source prefix ("ridhydro_C.36"): a twin of the plain-code
+#   station, or a gate/weir/canal gauge whose bank level makes it read "over the bank" (agent.tools treats the
+#   twins the same way). Their own pages and the chat still reach them by id.
+# - Coordinates outside Thailand (one RID row has its longitude in the latitude's range), which would zoom the
+#   map out to half the world.
 _LISTED = """(l.ts > now() - interval '3 days' OR r.station_id IS NOT NULL
-    OR s.stem_order IS NOT NULL OR s.role IS NOT NULL)"""
+    OR s.stem_order IS NOT NULL OR s.role IS NOT NULL)
+    AND COALESCE(s.oldcode, '') !~ '^[a-z]+_'
+    AND s.lat BETWEEN 5 AND 21 AND s.lon BETWEEN 97 AND 106"""
 
 
 def _station_rows(conn: psycopg.Connection, where: str, params=()) -> list[dict]:

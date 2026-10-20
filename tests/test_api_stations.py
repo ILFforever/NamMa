@@ -111,6 +111,18 @@ def test_list_covers_every_reporting_station_not_just_the_corridor(api):
     assert data[1]["stem_order"] is None and data[1]["role"] is None
 
 
+def test_list_leaves_out_prefixed_twins_and_stations_outside_thailand(api):
+    client, conn = api
+    _station(conn, 1, oldcode="C.36")
+    _station(conn, 2, oldcode="ridhydro_C.36")              # ThaiWater's second listing of the same gauge
+    _station(conn, 3, oldcode="ridhydro_TTC03")             # a gate under the prefix, no plain twin
+    _station(conn, 4, oldcode="E.92", lat=16.1, lon=15.9)   # longitude typed into the wrong range
+    for sid in (1, 2, 3, 4):
+        _reading(conn, sid, _hour(1), 2.0, -1.0)
+    assert [s["id"] for s in client.get("/api/stations").json()["data"]] == [1]
+    assert client.get("/api/stations/2").status_code == 200      # still reachable by id
+
+
 def test_list_marks_a_gauge_that_duplicates_another(api):
     client, conn = api
     _station(conn, 1, stem_order=1, role="main")
