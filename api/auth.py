@@ -9,10 +9,13 @@ import os
 import re
 import secrets
 from datetime import datetime, timedelta, timezone
+from typing import Literal
+from urllib.parse import urlencode
 
 import httpx
 import psycopg
-from fastapi import APIRouter, Depends, Header
+from fastapi import APIRouter, Depends, Header, Request, Response
+from fastapi.responses import RedirectResponse
 from pydantic import BaseModel, Field
 
 from agent import tools
@@ -57,14 +60,14 @@ def require_user(user: dict | None = Depends(current_user)) -> dict:
     return user
 
 
-def _verify_line(id_token: str) -> dict:
-    """Verify a LIFF ID token with LINE. Returns {sub, name, picture}."""
+def _verify_line(id_token: str, nonce: str | None = None) -> dict:
+    """Verify a LINE ID token (LIFF, or LINE web login with its nonce) with LINE. Returns {sub, name, picture}."""
     channel = os.environ.get("LINE_LOGIN_CHANNEL_ID")
     if not channel:
         raise ApiError(503, "unavailable", "LINE_LOGIN_CHANNEL_ID not set")
+    data = {"id_token": id_token, "client_id": channel} | ({"nonce": nonce} if nonce else {})
     try:
-        r = httpx.post("https://api.line.me/oauth2/v2.1/verify",
-                       data={"id_token": id_token, "client_id": channel}, timeout=10)
+        r = httpx.post("https://api.line.me/oauth2/v2.1/verify", data=data, timeout=10)
     except httpx.HTTPError:
         raise ApiError(503, "unavailable", "could not reach LINE to verify the token")
     if r.status_code != 200:
@@ -186,6 +189,21 @@ def login_google(body: LoginIn, conn: psycopg.Connection = Depends(get_db)):
     return _signed_in(conn, _google_user(conn, _google_claims(body.id_token)), body.chat_session)
 
 
+def _link_line(conn: psycopg.Connection, user: dict, c: dict) -> None:
+    """Add LINE account `c` ({sub, name, picture}) to `user`, folding in that LINE account's own NamMa account."""
+    if tools.is_line_id(user["line_user_id"]) and user["line_user_id"] != c["sub"]:
+        raise ApiError(409, "conflict", "this account is already linked to another LINE account")
+    other = conn.execute("SELECT id FROM users WHERE line_user_id = %s", (c["sub"],)).fetchone()
+    if other and other["id"] != user["id"]:
+        if conn.execute("SELECT 1 FROM user_identities a JOIN user_identities b USING (provider) "
+                        "WHERE a.user_id = %s AND b.user_id = %s AND a.subject <> b.subject",
+                        (other["id"], user["id"])).fetchone():
+            raise ApiError(409, "conflict", "both accounts have a different Google account; unlink one first")
+        tools.merge_users(conn, other["id"], user["id"])
+    conn.execute("UPDATE users SET line_user_id = %s, picture_url = coalesce(picture_url, %s) WHERE id = %s",
+                 (c["sub"], c["picture"], user["id"]))
+
+
 class LinkIn(BaseModel):
     id_token: str
 
@@ -196,18 +214,7 @@ def link(provider: str, body: LinkIn, user: dict = Depends(require_user), conn: 
     account of its own (e.g. a LINE OA chatter), the two are the same person: that account's places, memory and
     history join this one, and it is deleted. 409 if this account already has a different one of that provider."""
     if provider == "line":
-        c = _line_claims(body.id_token)
-        if tools.is_line_id(user["line_user_id"]) and user["line_user_id"] != c["sub"]:
-            raise ApiError(409, "conflict", "this account is already linked to another LINE account")
-        other = conn.execute("SELECT id FROM users WHERE line_user_id = %s", (c["sub"],)).fetchone()
-        if other and other["id"] != user["id"]:
-            if conn.execute("SELECT 1 FROM user_identities a JOIN user_identities b USING (provider) "
-                            "WHERE a.user_id = %s AND b.user_id = %s AND a.subject <> b.subject",
-                            (other["id"], user["id"])).fetchone():
-                raise ApiError(409, "conflict", "both accounts have a different Google account; unlink one first")
-            tools.merge_users(conn, other["id"], user["id"])
-        conn.execute("UPDATE users SET line_user_id = %s, picture_url = coalesce(picture_url, %s) WHERE id = %s",
-                     (c["sub"], c["picture"], user["id"]))
+        _link_line(conn, user, _line_claims(body.id_token))
     elif provider == "google":
         c = _google_claims(body.id_token)
         mine = conn.execute("SELECT subject FROM user_identities WHERE user_id = %s AND provider = 'google'",
@@ -229,6 +236,124 @@ def link(provider: str, body: LinkIn, user: dict = Depends(require_user), conn: 
     else:
         raise ApiError(404, "not_found", f"unknown provider: {provider}")
     return envelope(conn, _user_out(conn, _user_row(conn, user["id"])))
+
+
+# LINE web login (docs/api.md): the browser goes to LINE and LINE sends it back to /api/auth/line/callback, here,
+# in the same browser, so the person is signed in in Safari or Chrome. (liff.login() did this in the page and lost
+# the login on phones; liff.line.me signs in inside LINE's own browser instead.) LIFF stays for inside the LINE app.
+LINE_STATE_COOKIE = "namma_line_state"
+LINE_COOKIE_PATH = "/api/auth/line"
+LINE_LOGIN_MINUTES = 10
+
+
+def _line_web_config() -> tuple[str, str]:
+    channel, secret = os.environ.get("LINE_LOGIN_CHANNEL_ID"), os.environ.get("LINE_LOGIN_CHANNEL_SECRET")
+    if not channel or not secret:
+        raise ApiError(503, "unavailable", "LINE_LOGIN_CHANNEL_ID / LINE_LOGIN_CHANNEL_SECRET not set")
+    return channel, secret
+
+
+def _https(request: Request) -> bool:
+    return request.headers.get("x-forwarded-proto", request.url.scheme) == "https"
+
+
+def _line_callback_url(request: Request) -> str:
+    """Must be registered as a Callback URL on the LINE Login channel. PUBLIC_URL, or what Caddy forwarded."""
+    base = os.environ.get("PUBLIC_URL") or \
+        f"{'https' if _https(request) else 'http'}://{request.headers.get('host', request.url.netloc)}"
+    return base.rstrip("/") + "/api/auth/line/callback"
+
+
+class LineStartIn(BaseModel):
+    intent: Literal["login", "link"] = "login"
+    chat_session: str | None = Field(default=None, max_length=128)
+
+
+@router.post("/api/auth/line/start")
+def line_start(body: LineStartIn, request: Request, response: Response, user: dict | None = Depends(current_user),
+               conn: psycopg.Connection = Depends(get_db)):
+    """Where to send the browser for LINE Login. Sets the state cookie that ties LINE's answer to this browser."""
+    channel, _ = _line_web_config()
+    if body.intent == "link" and user is None:
+        raise ApiError(401, "unauthorized", "sign in first")
+    state, nonce = secrets.token_urlsafe(24), secrets.token_urlsafe(16)
+    conn.execute("DELETE FROM line_logins WHERE created_at < now() - make_interval(mins => %s)", (LINE_LOGIN_MINUTES,))
+    conn.execute("INSERT INTO line_logins (state_hash, nonce, intent, link_user_id, chat_session) "
+                 "VALUES (%s, %s, %s, %s, %s)",
+                 (_hash(state), nonce, body.intent, user["id"] if body.intent == "link" else None,
+                  body.chat_session if body.intent == "login" else None))
+    response.set_cookie(LINE_STATE_COOKIE, state, max_age=LINE_LOGIN_MINUTES * 60, path=LINE_COOKIE_PATH,
+                        httponly=True, secure=_https(request), samesite="lax")
+    url = "https://access.line.me/oauth2/v2.1/authorize?" + urlencode({
+        "response_type": "code", "client_id": channel, "redirect_uri": _line_callback_url(request),
+        "state": state, "scope": "openid profile", "nonce": nonce})
+    return envelope(conn, {"authorize_url": url})
+
+
+def _line_back(**query: str) -> RedirectResponse:
+    """Back to the account page with line_claim=… or line_error=… (the page reads and removes them)."""
+    r = RedirectResponse("/?" + urlencode(query) + "#/account", status_code=303)
+    r.delete_cookie(LINE_STATE_COOKIE, path=LINE_COOKIE_PATH)
+    return r
+
+
+@router.get("/api/auth/line/callback")
+def line_callback(request: Request, state: str = "", code: str = "", error: str = "",
+                  conn: psycopg.Connection = Depends(get_db)):
+    """LINE sends the browser here. Signs in (or links) and hands the page a one-time claim for its session.
+    line_error: expired (no such trip, or too old), browser (LINE came back in another browser: the state cookie
+    is missing), cancelled, conflict (link: see POST /api/auth/link), failed."""
+    row = conn.execute("SELECT * FROM line_logins WHERE state_hash = %s AND claim_hash IS NULL "
+                       "AND created_at > now() - make_interval(mins => %s)",
+                       (_hash(state), LINE_LOGIN_MINUTES)).fetchone() if state else None
+    if not row:
+        return _line_back(line_error="expired")
+    cookie = request.cookies.get(LINE_STATE_COOKIE)
+    if not cookie or not secrets.compare_digest(cookie, state):
+        return _line_back(line_error="browser")
+    if error or not code:
+        conn.execute("DELETE FROM line_logins WHERE state_hash = %s", (row["state_hash"],))
+        return _line_back(line_error="cancelled")
+    channel, secret = _line_web_config()
+    try:
+        r = httpx.post("https://api.line.me/oauth2/v2.1/token", timeout=10, data={
+            "grant_type": "authorization_code", "code": code, "redirect_uri": _line_callback_url(request),
+            "client_id": channel, "client_secret": secret})
+        if r.status_code != 200 or "id_token" not in r.json():
+            return _line_back(line_error="failed")
+        claims = _verify_line(r.json()["id_token"], nonce=row["nonce"])
+    except (httpx.HTTPError, ApiError):
+        return _line_back(line_error="failed")
+    c = {"sub": claims["sub"], "name": claims.get("name"), "picture": claims.get("picture")}
+    merged = False
+    if row["intent"] == "link":
+        user_id = row["link_user_id"]
+        try:
+            _link_line(conn, _user_row(conn, user_id), c)
+        except ApiError:
+            return _line_back(line_error="conflict")
+    else:
+        user_id = _line_user(conn, c)
+        merged = _absorb_chat(conn, user_id, row["chat_session"])
+    claim = secrets.token_urlsafe(32)
+    conn.execute("UPDATE line_logins SET claim_hash = %s, user_id = %s, merged_chat = %s WHERE state_hash = %s",
+                 (_hash(claim), user_id, merged, row["state_hash"]))
+    return _line_back(line_claim=claim)
+
+
+class LineClaimIn(BaseModel):
+    claim: str = Field(max_length=128)
+
+
+@router.post("/api/auth/line/claim")
+def line_claim(body: LineClaimIn, conn: psycopg.Connection = Depends(get_db)):
+    """The session for a finished LINE web login, once. 401 invalid_token when used, unknown or too old."""
+    row = conn.execute("DELETE FROM line_logins WHERE claim_hash = %s AND created_at > now() - make_interval(mins => %s) "
+                       "RETURNING user_id, merged_chat", (_hash(body.claim), LINE_LOGIN_MINUTES)).fetchone()
+    if not row:
+        raise ApiError(401, "invalid_token", "this LINE sign-in was already used or is too old")
+    return envelope(conn, {"session_token": create_session(conn, row["user_id"]),
+                           "user": _user_out(conn, _user_row(conn, row["user_id"])), "merged_chat": row["merged_chat"]})
 
 
 @router.delete("/api/auth/link/{provider}")

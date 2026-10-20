@@ -337,6 +337,18 @@ Body: `{ id_token, chat_session? }`.
 - **Demo (`DEMO_MODE=1`):** `demo:user`, `demo:user:<name>` (LINE, one account per name) and `demo:google:<name>` (Google). `<name>` is `[a-z0-9_-]{1,40}`.
 - There are no staff accounts or roles (the responder role went with rescue tickets, 2026-10-19).
 
+### LINE web login (signing in with LINE in a browser)
+Inside the LINE app the page has a LIFF ID token and uses `POST /api/auth/line`. In a browser (Safari, Chrome) the
+backend runs LINE Login itself, so the session lands in that browser:
+1. `POST /api/auth/line/start` `{ intent: "login" | "link", chat_session? }` → `{ authorize_url }`. Sets the
+   `namma_line_state` cookie (HttpOnly, 10 min). `link` needs a session. **503** without `LINE_LOGIN_CHANNEL_ID` and
+   `LINE_LOGIN_CHANNEL_SECRET`. The page sends the browser to `authorize_url`.
+2. LINE sends the browser to `GET /api/auth/line/callback` (register `<PUBLIC_URL>/api/auth/line/callback` as a
+   Callback URL on the LINE Login channel; `PUBLIC_URL` defaults to the forwarded scheme and host). It signs in
+   (or links) and redirects to `/?line_claim=<one-time>#/account`, or `/?line_error=<code>#/account`:
+   `expired`, `browser` (came back in a browser without the cookie), `cancelled`, `conflict` (link), `failed`.
+3. `POST /api/auth/line/claim` `{ claim }` → same as `POST /api/auth/line`, once, within 10 minutes; else **401**.
+
 ### `POST /api/auth/link/{line|google}` → `SessionUser` (signed in)
 Body: `{ id_token }`. Adds a second way to sign in. If that LINE or Google account already has its own NamMa account (a LINE OA chatter, say), it is the same person: that account's places, memory and history join this one and it is deleted. **409 `conflict`** if this account already has a different one of that provider, or merging would give it two. 404 for another provider.
 
