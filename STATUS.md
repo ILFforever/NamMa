@@ -1,4 +1,4 @@
-# NamMa status — 2026-10-19
+# NamMa status — 2026-10-20
 
 Two repos in the **NamMa-CEDT** org: `namma-backend` (this one) and `namma-web`. Work happens on branches + PRs.
 
@@ -25,6 +25,9 @@ Two repos in the **NamMa-CEDT** org: `namma-backend` (this one) and `namma-web`.
 | Alerts | Push only when tier rises, 6 h repeat at danger, quiet hours, personal tone | DB test; live alerts sent, no duplicates |
 | API | Web API contract (`docs/api.md`): envelope + errors, LINE/Google login + demo login, sessions, stations, shelters, flood areas + cells, chat, profile | 108 backend tests; end to end on live data (flood: made-up cells) |
 | Data | GISTDA 3-day + 7-day flood layers (`features/flood/…`, H3 cells): paged download every 3 h, skipped when unchanged, never stored partial; area totals history in `flood_fetches` | Unit + DB tests against a fake GISTDA; **not yet run against the real one (no key)** |
+| Data | GISTDA flood history 2011–2024, all 77 provinces: our own copy (7.87M shapes → 769,808 H3 cells, years per tambon), raw pages on the VM disk | Every province's count matches GISTDA's `numberMatched`; read back by `/api/flood/tambon` on the VM (ต.บางบาล: 8 of 14 years) |
+| Data | Our own record of GISTDA's live layers: every stored 3/7/30-day layer kept (raw pages 90 days on the VM disk, cells for good in `flood_cells_history`, one copy per period per day); the fetch runs as its own low-priority process | DB tests; real 30-day layer dry run on the VM: 187,778 cells, 13.3 min, peak 593 MB. **Not deployed yet** |
+| Web | Flood map `30 วัน`: water seen this week vs only 8–30 days ago; tambon card tells its story (3/7/30-day area, years 2011–2024 + this year, our daily record); chat says "น้ำอาจลดลงแล้ว" when water was there this month but not now | 74 web + 175 backend tests, build, headless Chrome at 390 and 1280 px on the mock; tambon endpoint read-only on real VM data. **Not deployed yet** |
 | Removed | Rescue tickets, the responder role and dashboard API (`/api/tickets`, `triage:*` postbacks, `demo:responder`); migration 006 drops the tables | Upgrade from 005 tested |
 | App | LINE webhook: signature check, reply, push, quick replies, crash fallback with 1784 | Unit test (not yet tested with real LINE) |
 | Web | `namma-web`: chat, station map, satellite flood tab (Leaflet + h3-js + Esri imagery, province → amphoe → tambon totals) on the NamMa design system; mock or real API | 40 tests, typecheck, build; headless Chrome at 320–1280 px, signed in and out |
@@ -47,7 +50,8 @@ Two repos in the **NamMa-CEDT** org: `namma-backend` (this one) and `namma-web`.
 | 🟡 | LINE Login (LIFF) on the web app | Dev | LINE Login channel |
 | 🟡 | Charts for the backtest + model slides | Dev | — |
 | 🟡 | Polish Thai wording (native-speaker review) | Team | — |
-| 🟡 | OBS upload of raw archives | Dev | OBS bucket |
+| 🟠 | After deploying the GISTDA record: run the checks in `infra/deploy/README.md` (GISTDA record): site speed and memory during a 30-day fetch, then a week of daily copies | Dev | Deploy |
+| 🟡 | OBS upload of raw archives (none possible for now: raw GISTDA pages stay on the VM disk, 179 GB free) | Dev | OBS bucket |
 | 🟡 | Answer the open questions: region ID, LINE push quota, what the credit covers | Owner | Console access |
 | ⚪ | Record the demo video, slides, rehearse | Team | Everything above |
 
