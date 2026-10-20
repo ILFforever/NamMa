@@ -33,7 +33,7 @@ import subprocess
 import sys
 import time
 from collections import defaultdict
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 
 import h3
@@ -380,13 +380,32 @@ def store(conn, period: str, rows: list[dict], fp: str | None, unit: str) -> dic
          "by_province": Jsonb({k: round(v, 4) for k, v in sorted(by_province.items())})})
     conn.execute("DELETE FROM flood_extent")
     conn.execute(EXTENT_SQL)
+    return {**summary, "day": copy_today(conn)}
+
+
+def copy_today(conn) -> date:
+    """Make every period's flood_extent today's copy (Bangkok date) in flood_cells_history, replacing any earlier
+    one today. The caller commits."""
     day = datetime.now(BKK).date()
     cols = ", ".join(HISTORY_COLS)
     conn.execute("DELETE FROM flood_cells_history WHERE day = %s", (day,))
     conn.execute(f"INSERT INTO flood_cells_history (day, period, fetch_id, {cols}) "
                  f"SELECT %s, e.period, f.id, {', '.join('e.' + c for c in HISTORY_COLS)} FROM flood_extent e "
                  "JOIN (SELECT period, max(id) AS id FROM flood_fetches GROUP BY period) f USING (period)", (day,))
-    return {**summary, "day": day}
+    return day
+
+
+def ensure_today(conn) -> bool:
+    """A copy every day, even when no layer changed: a layer is stored only when it changes or after 24 h, which
+    drifts with the 3-hourly round and can skip a day. True when today's copy had to be made here."""
+    day = datetime.now(BKK).date()
+    have = conn.execute("SELECT count(DISTINCT period) FROM flood_cells_history WHERE day = %s", (day,)).fetchone()[0]
+    want = conn.execute("SELECT count(DISTINCT period) FROM flood_extent").fetchone()[0]
+    if have >= want:
+        return False
+    copy_today(conn)
+    conn.commit()
+    return True
 
 
 def _lean(cell: dict) -> dict:
@@ -447,6 +466,12 @@ def run_all(periods=PERIODS, force: bool = False) -> None:
                   f"{s['cells']} cells, {s['area_km2']:.1f} km² in {time.monotonic() - started:.0f} s"), flush=True)
         except Exception as e:               # keep the stored layer; water data does not depend on this
             print(f"gistda {period} skipped: {_scrub(repr(e), key)}", flush=True)
+    try:
+        with connect() as conn:
+            if ensure_today(conn):
+                print("gistda record: today's copy made from the stored layers (none changed today)", flush=True)
+    except Exception as e:
+        print(f"gistda record skipped: {e!r}", flush=True)
 
 
 def loop(every: int, periods=PERIODS) -> None:

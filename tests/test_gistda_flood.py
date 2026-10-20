@@ -479,3 +479,16 @@ def test_a_longer_period_never_shows_less_water_than_a_shorter_one(api, monkeypa
     assert w["30days"] == w["7days"] and w["3days"] == 0
     assert {r["period"]: r["area_rai"] for r in story["record"]} == {"7days": w["7days"], "30days": w["30days"]}
     assert conn.execute("SELECT count(*) FROM flood_extent WHERE period = '3days'").fetchone()[0] == 0   # not fetched
+
+
+def test_a_copy_every_day_even_when_no_layer_changed(api, monkeypatch, tmp_path, small_pages):
+    _, conn = api
+    assert gf.ensure_today(conn) is False                                               # nothing stored yet
+    _store_layer(conn, monkeypatch, tmp_path, small_pages)
+    assert gf.ensure_today(conn) is False                                               # the store made today's
+    today = datetime.now(gf.BKK).date()
+    conn.execute("UPDATE flood_cells_history SET day = day - 1")                       # a new day, layer unchanged
+    assert gf.ensure_today(conn) is True
+    by_day = "SELECT day, period, count(*) FROM flood_cells_history GROUP BY 1, 2 ORDER BY 1, 2"
+    assert conn.execute(by_day).fetchall() == [(today - timedelta(days=1), "3days", 7), (today, "3days", 7)]
+    assert gf.ensure_today(conn) is False                                               # once a day
