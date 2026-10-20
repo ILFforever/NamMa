@@ -249,8 +249,8 @@ def test_old_and_partial_snapshots_are_dropped(api, monkeypatch, tmp_path, small
     assert snap.name not in ("20200101_000000_000000", "20991231_000000_000000") and snap.suffix == ""
 
 
-def test_supervise_runs_the_loop_in_a_low_priority_process(monkeypatch):
-    started = []
+def test_supervise_fetches_in_a_fresh_low_priority_process_each_round(monkeypatch):
+    started, slept = [], []
 
     class Stop(Exception):
         pass
@@ -262,15 +262,19 @@ def test_supervise_runs_the_loop_in_a_low_priority_process(monkeypatch):
         def wait(self):
             return 1                                                                   # the fetcher died
 
-    def sleep(_seconds):
-        raise Stop
+    def sleep(seconds):
+        slept.append(seconds)
+        if len(slept) == 2:
+            raise Stop
 
     monkeypatch.setattr(gf.subprocess, "Popen", FakeProcess)
     monkeypatch.setattr(gf.time, "sleep", sleep)
     with pytest.raises(Stop):
         gf.supervise(10800)
-    [cmd] = started
-    assert cmd[:3] == ["nice", "-n", "10"] and cmd[4:] == ["-m", "ingest.gistda_flood", "--every", "10800"]
+    assert len(started) == 2                                                           # a new process each round
+    cmd = started[0]
+    assert cmd[:3] == ["nice", "-n", "10"] and cmd[4:] == ["-m", "ingest.gistda_flood"]   # once, then it exits
+    assert all(60 <= s <= 10800 for s in slept)                                        # the rest of the round
 
 
 def test_flood_areas(api, monkeypatch, tmp_path, small_pages):

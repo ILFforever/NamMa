@@ -45,14 +45,15 @@ turn on "Use webhook", turn off auto-reply messages. Click Verify.
 - Logs: `journalctl -u namma -f`
 - Web app: `https://<EIP>.sslip.io/#/chat`, station map `#/map`, satellite flood map `#/flood`
 - GISTDA: `journalctl -u namma | grep gistda` shows each layer's cells and area, or why it was skipped. The fetch
-  runs as a low-priority child of the API (`ingest.gistda_flood --every`), so it restarts with the service.
+  runs as a fresh low-priority child of the API every 3 h (`ingest.gistda_flood`), which exits after each run and
+  hands its memory back; it stops and starts with the service.
   Every stored layer is kept: all its pages under `var/raw/gistda/flood/<period>/<time>/` (key removed, ~50 MB a
   7-day layer, dropped after `GISTDA_SNAPSHOT_KEEP_DAYS`, default 90) and its cells in `flood_cells_history`.
 
 ### GISTDA record (copy plan phase 4): check after the deploy that adds it
 The first fetch after that deploy downloads the 30-day layer for the first time. Dry run on this VM (2026-10-20):
 187,778 cells in 188 pages, 13.3 min, peak 593 MB in the fetcher (the VM had ~860 MB available). On the VM, as root:
-1. The fetcher runs as its own process at nice 10, next to uvicorn:
+1. The fetcher runs as its own process at nice 10 during a fetch, and is gone between fetches (its memory with it):
    `ps -o pid,ni,rss,etime,args -u namma | grep -E 'gistda_flood|uvicorn'`
 2. Every stored layer left a snapshot, and none is left half-written (a `*.partial` folder exists only during a fetch):
    `ls /opt/namma/var/raw/gistda/flood/*/ && du -sh /opt/namma/var/raw/gistda/flood/*`
