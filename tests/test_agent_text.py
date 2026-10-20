@@ -144,10 +144,38 @@ def test_risk_answer_web_swaps_keep_verdict_and_advice_drop_card_lines():
     assert "C.35 บ้านป้อม" in txt and "โรงเรียนวัดกอไผ่" in txt
     web = _web(txt, swaps)
     # Web: the worse station's verdict, the notes, advice, the extras; the cards carry the numbers and the shelter.
-    assert "สถานีบ้านป้อม น้ำล้นตลิ่งแล้ว · ความเสี่ยงระดับอันตราย" in web
+    assert "\n• สถานีบ้านป้อม: น้ำล้นตลิ่งแล้ว · ความเสี่ยงระดับอันตราย\n" in web
     assert "ไม่ใช่ระดับน้ำที่บ้านโดยตรง" in web and "สิ่งที่ควรทำตอนนี้" in web and "📌 บันทึกแล้ว" in web
     assert "C.36" not in web and "0.55" not in web and "โรงเรียนวัดกอไผ่" not in web and "ข้อมูล ณ" not in web
-    assert web.startswith("📍 บ้าน (ตำแหน่งโดยประมาณจากชื่อพื้นที่)\n")
+    # The direct answer first (from the worse station), then the place heading a list of facts, then the caveat.
+    lead = answer.rule_lead("danger", False, None, True)
+    assert web.startswith(lead + "\n\n📍 บ้าน (ตำแหน่งโดยประมาณจากชื่อพื้นที่)\n• ")
+    assert "\n\n" + answer.STATION_NOT_HOUSE + "\n\n" in web
+
+
+def test_rule_lead_leans_but_never_promises():
+    extent = {"nearest_km": None, "at_point": False}
+    calm = answer.rule_lead("normal", False, extent, False)
+    assert calm.startswith("ตอนนี้ยังไม่น่าห่วงค่ะ") and "ไม่พบน้ำท่วม" in calm
+    assert "แต่น้ำกำลังขึ้น" in answer.rule_lead("normal", True, None, False)
+    assert "พบน้ำท่วมที่จุดนี้" in answer.rule_lead("normal", False, {"nearest_km": 0.0, "at_point": True}, False)
+    for tier in ("normal", "watch", "warning", "danger"):
+        t = answer.rule_lead(tier, True, extent, False)
+        assert not answer._LEAD_BANNED.search(t) and not llm.NUM.search(t)
+        assert tier == "normal" or not answer._LEAD_CALM.search(t)
+
+
+def test_lead_answer_rejects_numbers_safe_and_calm_at_watch(monkeypatch):
+    monkeypatch.setattr(llm, "available", lambda: True)
+    for out, tier, ok in [("ยังไม่น่าห่วงค่ะ น้ำยังต่ำกว่าตลิ่ง", "normal", True),
+                          ("น้ำจะถึงใน 3 ชม.ค่ะ", "normal", False),
+                          ("ปลอดภัยค่ะ", "normal", False),
+                          ("ไม่น่าท่วมค่ะ", "watch", False),
+                          ("ควรเฝ้าระวังค่ะ น้ำใกล้ตลิ่งแล้ว", "watch", True)]:
+        monkeypatch.setattr(llm, "chat", lambda *a, _o=out, **kw: _o)
+        got = answer.lead_answer("จะท่วมไหม", tier, False, None, False)
+        assert (got == out) is ok, out
+    assert answer.lead_answer("", "normal", False, None, False) == answer.rule_lead("normal", False, None, False)
 
 
 def test_shelter_answer_web_swap_keeps_heading_and_evacuation_note():

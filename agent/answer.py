@@ -1,10 +1,12 @@
 """Thai answer text. Facts lines are templated from tool output (rule 1: numbers only from tools);
-the LLM, when configured, may only rewrite the advice paragraph, and is rejected if it adds numbers.
+the LLM, when configured, may only reword the opening answer and the advice paragraph, and is rejected if it adds
+numbers.
 
 The web app draws stations and shelters as cards from the sources, so risk_answer and shelter_answer also return
 web swaps: (block of the text, shorter web text). chat.web_reply applies them; LINE gets the full text.
 """
 import re
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
 from zoneinfo import ZoneInfo
 
@@ -97,7 +99,7 @@ def verdict(s: dict) -> str:
     else:
         state = "น้ำยังต่ำกว่าตลิ่ง"
     name = s["name_th"] if s["name_th"].startswith("สถานี") else "สถานี" + s["name_th"]
-    return f"{name} {state} · ความเสี่ยงระดับ{TIER_TH[s['risk_tier']]}"
+    return f"{name}: {state} · ความเสี่ยงระดับ{TIER_TH[s['risk_tier']]}"
 
 
 def _rai(km2: float) -> str:
@@ -162,6 +164,53 @@ def rule_advice(tier: str, memory: dict) -> list[str]:
         out.append("เตรียมกรงหรือสายจูงสัตว์เลี้ยง และดูว่าศูนย์พักพิงรับสัตว์เลี้ยงไหม")
     if house.get("stories") == 1 and urgent:
         out.append("บ้านชั้นเดียว: เตรียมที่พักสำรอง เช่น บ้านญาติที่อยู่สูงกว่า")
+    return out
+
+
+LEAD_SYSTEM = """คุณคือ "น้ำมา" ผู้ช่วยเรื่องน้ำท่วม พูดภาษาไทย สุภาพ สงบ ใช้ "ค่ะ" ไม่ใช้ "ครับ"
+ตอบคำถามของผู้ใช้ตรงๆ ใน 1-2 ประโยคสั้นๆ โดยใช้คำตัดสินที่ให้มาเป็นหลัก ห้ามเปลี่ยนระดับความเสี่ยง
+ขึ้นต้นด้วยคำตอบเลย แล้วตามด้วยเหตุผลสั้นๆ จากข้อมูลที่ให้ ไม่ต้องทักทาย ไม่ใช้ markdown
+ห้ามใส่ตัวเลขใดๆ ห้ามบอกว่าปลอดภัย หรือไม่ท่วมแน่นอน"""
+
+_LEAD_BANNED = re.compile(r"ปลอดภัย|ไม่ท่วมแน่|ไม่มีทางท่วม|ไม่ต้อง(?:ห่วง|กังวล)")
+_LEAD_CALM = re.compile(r"ไม่น่าห่วง|ไม่น่าท่วม|ไม่ท่วม")
+
+
+def rule_lead(tier: str, rising: bool, extent: dict | None, approx: bool) -> str:
+    """The direct answer above the facts, from the worst tier shown. Leans, never promises: no "safe", no "won't flood"."""
+    if tier == "danger":
+        return "ความเสี่ยงสูงค่ะ น้ำล้นตลิ่งที่สถานีวัดน้ำใกล้ๆ แล้ว ถ้าบ้านอยู่ที่ลุ่มหรือริมน้ำ ควรย้ายไปที่สูงตอนนี้"
+    if tier == "warning":
+        return "มีความเสี่ยงค่ะ น้ำที่สถานีวัดน้ำใกล้ๆ ใกล้ถึงตลิ่ง ควรเตรียมพร้อมอพยพ"
+    if tier == "watch":
+        return "ควรเฝ้าระวังค่ะ น้ำที่สถานีวัดน้ำใกล้ๆ ยังไม่ถึงตลิ่งแต่ใกล้ขึ้นมาแล้ว ควรยกของขึ้นที่สูงไว้ก่อน"
+    if extent is None:
+        sat = ""
+    elif extent["nearest_km"] is None:
+        sat = " และภาพดาวเทียมไม่พบน้ำท่วมในบริเวณนี้"
+    elif extent["at_point"] and not approx:
+        sat = " แต่ภาพดาวเทียมพบน้ำท่วมที่จุดนี้ ควรติดตามใกล้ชิด"
+    else:
+        sat = " แต่ภาพดาวเทียมพบน้ำท่วมในบริเวณใกล้เคียง ควรติดตามใกล้ชิด"
+    tail = " แต่น้ำกำลังขึ้น ควรติดตามต่อ" if rising and not sat.startswith(" แต่") else ""
+    return f"ตอนนี้ยังไม่น่าห่วงค่ะ น้ำที่สถานีวัดน้ำใกล้ๆ ยังต่ำกว่าตลิ่ง{sat}{tail}"
+
+
+def lead_answer(question: str, tier: str, rising: bool, extent: dict | None, approx: bool) -> str:
+    """rule_lead, reworded by the LLM to answer the question as asked. The rewrite is rejected if it has a number,
+    says "safe" or "won't flood", or sounds calm when the tier is watch or higher."""
+    rule = rule_lead(tier, rising, extent, approx)
+    if not question.strip() or not llm.available():
+        return rule
+    out = llm.chat([{"role": "system", "content": LEAD_SYSTEM},
+                    {"role": "user", "content": f"คำถาม: {question}\nคำตัดสิน: {rule}\n\nเขียนคำตอบ"}],
+                   max_tokens=150)
+    if not out:
+        return rule
+    out = _MARKDOWN.sub("", " ".join(out.split())).replace("ครับ", "ค่ะ")
+    if (llm.NUM.search(out) or _LEAD_BANNED.search(out) or len(out) > 200
+            or (rank(tier) >= rank("watch") and _LEAD_CALM.search(out))):
+        return rule
     return out
 
 
@@ -249,8 +298,9 @@ def shelter_answer(place_label: str, approx: bool, shelters: list[dict],
 
 def risk_answer(place_label: str, approx: bool, stations: list[dict], shelters: list[dict], memory: dict,
                 extent: dict | None = None, recurrence: dict | None = None,
-                extra: list[str] | None = None) -> tuple[str, list[WebSwap]]:
-    """extra: follow-up paragraphs (questions, 'saved' notes) placed before the DDPM footer.
+                extra: list[str] | None = None, question: str = "") -> tuple[str, list[WebSwap]]:
+    """The reply opens with a direct answer to the question (lead_answer), then the facts it rests on.
+    extra: follow-up paragraphs (questions, 'saved' notes) placed before the DDPM footer.
     On the web the station lines, GISTDA lines and shelter line become cards and source lines, so the text keeps a
     one-line verdict, the forecast (no card shows it), the far-station and station-not-house notes, and the advice."""
     tail = "".join("\n\n" + e for e in extra or [])
@@ -271,23 +321,27 @@ def risk_answer(place_label: str, approx: bool, stations: list[dict], shelters: 
         lines += station_lines(s)
     satellite = []                                 # about the place itself, not the river: kept on the web too
     if extent is not None:
-        satellite.append("🛰️ " + flood_extent_text(extent, approx))
+        satellite.append(flood_extent_text(extent, approx))
     if recurrence is not None and (rec := recurrence_text(recurrence, approx)):
-        satellite.append("🛰️ " + rec)
-    lines += satellite
+        satellite.append(rec)
+    lines += ["🛰️ " + s for s in satellite]
     lines.append(STATION_NOT_HOUSE)
     place = f"📍 {place_label}" + (" (ตำแหน่งโดยประมาณจากชื่อพื้นที่)" if approx else "")
     station_block = "\n".join(lines)
     facts = place + "\n" + station_block
+    # Web: the place line heads a list of one fact per bullet (ReplyText), and the caveats follow as their own paragraph.
     web = [verdict(shown[-1])]                     # the worse station when two are shown
     web += [f"แบบจำลองคาดการณ์ ({s['name_th']}): {f}" for s in shown if (f := _forecast(s))]
-    web += [far] if far else []
     web += satellite
-    web.append(STATION_NOT_HOUSE)
-    swaps = [(station_block, "\n".join(web))]
+    notes = ([far] if far else []) + [STATION_NOT_HOUSE]
+    swaps = [(station_block, "\n".join("• " + w for w in web) + "\n\n" + "\n".join(notes))]
     tier = worst["risk_tier"]
-    adv = advice_lines(tier, memory, facts)
-    body = facts + "\n\n✅ สิ่งที่ควรทำตอนนี้\n" + "\n".join(f"• {a}" for a in adv)
+    rising = (main.get("trend_3h_cm_per_hr") or 0) >= 0.5
+    with ThreadPoolExecutor(2) as pool:          # two LLM calls: run them side by side
+        lead = pool.submit(lead_answer, question, tier, rising, extent, approx)
+        adv = advice_lines(tier, memory, facts)
+        lead = lead.result()
+    body = lead + "\n\n" + facts + "\n\n✅ สิ่งที่ควรทำตอนนี้\n" + "\n".join(f"• {a}" for a in adv)
     sh = shelter_line(shelters, need_patients=bool((memory.get("household") or {}).get("immobile")))
     if sh:
         shelter_block = "\n\n" + "\n".join(sh)
