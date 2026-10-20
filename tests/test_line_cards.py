@@ -146,7 +146,9 @@ def test_too_long_or_empty_stays_plain_text():
 
 def test_alert_band_takes_the_tier_colour():
     (msg,) = cards.alert_messages("🟠 เตือนภัยน้ำ — บ้าน\n• ยกของขึ้นที่สูง\n\n" + answer.FOOTER, "warning")
-    assert msg["contents"]["header"]["backgroundColor"] == cards.TIER_SOFT["warning"]
+    band = msg["contents"]["header"]
+    assert band["backgroundColor"] == cards.TIER_COLOR["warning"]
+    assert {t["color"] for t in band["contents"]} == {cards.ON_TIER["warning"]}
 
 
 def test_every_canned_reply_builds_a_valid_card():
@@ -158,3 +160,46 @@ def test_every_canned_reply_builds_a_valid_card():
         assert all(t.strip() for t in _texts(msg["contents"]))      # LINE rejects empty text components
         for ln in filter(str.strip, text.removesuffix(answer.FOOTER).split("\n")):
             assert any(ln.strip().removeprefix("• ") in t for t in _texts(msg["contents"])), ln
+
+
+def _nodes(node):
+    if isinstance(node, dict):
+        yield node
+        for v in node.values():
+            yield from _nodes(v)
+    elif isinstance(node, list):
+        for v in node:
+            yield from _nodes(v)
+
+
+def _all_cards():
+    from line import webhook
+    texts = [chat.HELP, chat.EVAC_TEXT, chat.ALERT_TEXT, webhook.WELCOME + answer.FOOTER, chat.HOTLINES,
+             "‼️ บ้านนี้มีคนที่เดินไม่ได้\n⚠️ ค่าที่สถานี"]
+    out = [m for t in texts for m in cards.text_messages(Reply(t))]
+    out += cards.text_messages(Reply(chat.RESCUE_HOTLINE + "\n\nโทรเลย", emergency=True))
+    out += [m for tier in cards.TIER_COLOR for m in cards.alert_messages("🔴 x — บ้าน\n• y\n\n" + answer.FOOTER, tier)]
+    out += cards.risk_messages(reply(extra=["👪 ที่บ้านมีผู้สูงอายุไหม?"]))
+    return out
+
+
+def test_readability_no_text_under_the_14px_caption():
+    for node in _nodes(_all_cards()):
+        if node.get("type") == "text":
+            assert node["size"].endswith("px") and int(node["size"][:-2]) >= 14, node
+
+
+def test_only_design_system_colours():
+    palette = {cards.INK, cards.MUTED, cards.SURFACE, cards.SUNKEN, cards.LINE_C, cards.LINE_STRONG, cards.RIVER,
+               cards.HOME_SOFT, *cards.TIER_COLOR.values(), *cards.ON_TIER.values(), *cards.TIER_SOFT.values(),
+               *cards.TIER_INK.values()}
+    for node in _nodes(_all_cards()):
+        for key in ("color", "backgroundColor", "borderColor"):
+            if key in node and isinstance(node[key], str):
+                assert node[key].upper() in {c.upper() for c in palette}, (key, node[key])
+
+
+def test_tap_targets_are_48px():
+    for node in _nodes(_all_cards()):
+        if node.get("type") == "box" and "action" in node:
+            assert node.get("height") == "48px", node
