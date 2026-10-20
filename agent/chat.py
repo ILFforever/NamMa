@@ -82,6 +82,8 @@ _LABEL_Q = re.compile(r"((?:(?<!ชาว)(?<!หมู่)(?<!เพื่อ�
 # บ้าน + a description ("บ้านใกล้คลอง", "บ้านชั้นเดียว") is the home, not a label named "บ้านใกล้คลอง".
 _DESCRIBES = re.compile(r"(บ้าน|ร้าน|โรงเรียน|คอนโด|หอพัก|ที่ทำงาน|ออฟฟิศ|โรงงาน)"
                         r"(ใกล้|ติด|ริม|ชั้น|สอง|หลัง|มี|เป็น|ก็|เลขที่|อยู่|ที่|แถว|ของ(ผม|ฉัน|เรา|หนู))")
+# Words that start a sentence about a named place, not more of its name: "ร้านส้มตำ|มีหมา".
+_AFTER_NAME = re.compile(r"มี|ใกล้|ติด|ริม|ชั้น|ของ|ก็|เลี้ยง|เปิด|ปิด|ขาย|หลัง")
 _MY_HOME = re.compile(r"บ้าน(ผม|ฉัน|หนู|เรา|ดิฉัน|กู|เค้า|ตัวเอง|ข้า|เอง|ฉันเอง|ผมเอง|นี้|จ้า|นะ|น่ะ|ก็)?")
 # Asking for a promise of safety, or whether to evacuate or stay: always answered with "follow official orders".
 ASSURE_RE = re.compile(r"ปลอดภัย|รับรอง|แน่นอน|ไม่ท่วมแน่|อพยพ(ไหม|มั้ย)|ต้องอพยพ|ควรอพยพ|ไม่ต้องอพยพ|ต้องหนี|"
@@ -318,7 +320,8 @@ def _understand(conn, uid: int, t: str) -> understand.Understanding | None:
         return None                                        # buttons and delete commands mean exactly what they say
     prof = tools.get_user_profile(conn, uid)
     recent = tools.recent_messages(conn, uid, 7)[:-1]      # the last one is this message, already logged
-    return understand.read(t, _rule_guess(t), [l["label"] for l in prof["locations"]], recent)
+    areas = {l["label"]: l["notes"][len(APPROX_NOTE):] for l in prof["locations"] if _approx(l)}
+    return understand.read(t, _rule_guess(t), [l["label"] for l in prof["locations"]], recent, areas)
 
 
 def _rule_guess(t: str) -> str:
@@ -558,7 +561,10 @@ def _saved_named(t: str, locations: list[dict]) -> dict | None:
     """The saved place the text names: exactly its label ("บ้านแม่ยาย" is not "บ้านแม่"), else the longest saved label
     in the text."""
     if q := _question_label(t):
-        return next((l for l in locations if l["label"] == q), None)
+        exact = next((l for l in locations if l["label"] == q), None)
+        # "ร้านส้มตำมีหมา": the saved "ร้านส้มตำ", then more words (not a longer name like "บ้านแม่ยาย")
+        tails = [l for l in locations if q.startswith(l["label"]) and _AFTER_NAME.match(q[len(l["label"]):])]
+        return exact or (max(tails, key=lambda l: len(l["label"])) if tails else None)
     named = [l for l in locations if l["label"] in t.replace(" ", "")]
     return max(named, key=lambda l: len(l["label"])) if named else None
 
@@ -585,7 +591,15 @@ def _talk(conn, uid: int, t: str, force: bool = False) -> Reply:
     saved_labels = tuple(l["label"] for l in prof["locations"])
     u = _U.get()
     place = _find_place(t)
-    label = memory.location_label(t) or (u.label if u and u.place and u.place.amphoe else None)
+    rule_label = memory.location_label(t)
+    label = rule_label or (u.label if u and u.place and u.place.amphoe else None)
+    named = _saved_named(t, prof["locations"]) or next(
+        (l for l in prof["locations"] if u and l["label"] == u.saved), None)
+    if named and place and not rule_label and not find_place(t):
+        # "ร้านส้มตำมีหมา": the saved ร้านส้มตำ, its area only guessed by the LLM; not a new location for it
+        place = label = None
+    if label and not rule_label and any(s != label and s.startswith(label) for s in saved_labels):
+        label = None                     # the LLM's "ร้าน" for a saved "ร้านส้มตำ": never saved as a second place
     asks = force or _asks_risk(t) or bool(place and SAFE_WORDS.search(t))
     hill = bool(HILL_RE.search(_PERSON.sub(" ", t).replace(" ", "")))
     assure = bool(ASSURE_RE.search(t))
@@ -594,8 +608,6 @@ def _talk(conn, uid: int, t: str, force: bool = False) -> Reply:
     if place and not place.amphoe:
         return _ask_place(label, [], hill, assure, need_consent, province=place.province)
     cands = [] if place or not (asks or label) else place_candidates(t, skip=saved_labels)
-    named = _saved_named(t, prof["locations"]) or next(
-        (l for l in prof["locations"] if u and l["label"] == u.saved), None)
     tight = t.replace(" ", "")
     hits = [l for l in prof["locations"] if l["label"] in tight]
     hits = [l for l in hits if not any(l is not o and l["label"] in o["label"] for o in hits)]
