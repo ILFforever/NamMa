@@ -233,15 +233,19 @@ def _route(conn, uid: int, text: str, location) -> Reply:
     t = text.strip()
     if t == CONSENT_YES:
         facts = tools.pop_pending(conn, uid)
-        if not facts:
+        places = tools.pop_place_pending(conn, uid)
+        if not facts and not places:
             return Reply("ตอนนี้ไม่มีข้อมูลที่รอการยินยอมค่ะ ดูข้อมูลที่จำไว้ได้ที่ปุ่มด้านล่าง", [PROFILE_Q])
         tools.record_consent(conn, uid, True)
         tools.merge_memory(conn, uid, facts)
-        lines = memory.describe(facts)
+        for p in places:
+            tools.merge_place_facts(conn, p["id"], p["facts"])
+        lines = memory.describe(facts) + [
+            f"{p['label']}: " + ", ".join(memory.describe(p["facts"], memory.is_home(p["label"]))) for p in places]
         return Reply("ขอบคุณค่ะ บันทึกแล้ว: " + (", ".join(lines) if lines else "-") +
                      "\nดูหรือลบได้ตลอด พิมพ์ \"ข้อมูลอะไรที่จำเกี่ยวกับฉัน\"", [PROFILE_Q])
     if t == CONSENT_NO:
-        if not tools.get_user_profile(conn, uid)["pending"]:
+        if not tools.get_user_profile(conn, uid)["pending_any"]:
             return Reply("ตอนนี้ไม่มีข้อมูลที่รอการยินยอมค่ะ ดูข้อมูลที่จำไว้ได้ที่ปุ่มด้านล่าง", [PROFILE_Q])
         tools.record_consent(conn, uid, False)
         tools.set_pending(conn, uid, {})
@@ -446,23 +450,38 @@ def _place_name_ok(t: str) -> bool:
             and t not in (SET_HOME, ADD_PLACE, ADD_FACTS, CONSENT_YES, CONSENT_NO))
 
 
-def _remember(conn, uid: int, text: str) -> tuple[dict, bool]:
-    """Extract stated facts; save the non-sensitive ones, park sensitive ones. Returns (facts, needs_consent)."""
+def _remember(conn, uid: int, text: str, at: dict | None = None) -> tuple[dict, bool]:
+    """Extract stated facts; save the non-sensitive ones, park sensitive ones. Returns (facts, needs_consent).
+    at: the saved place ({id, label}) the message is about ("ร้านส้มตำมีหมา"): its facts are kept there, all but the
+    person's medical needs. Without one they are general and hold at every place."""
     if memory.negates_sensitive(text):
         tools.set_pending(conn, uid, {})     # "ยายไม่ได้ติดเตียง": a correction drops what waited for consent
     u = _U.get()
     facts = u.facts if u else memory.extract(text)
+    if not facts and not u and at and text.lstrip().startswith(at["label"]):
+        # "บ้านเพื่อนมียายติดเตียง" with บ้านเพื่อน saved is about that place, not someone else's household
+        # ("ข้างบ้านมี…" does not start with the label, so a neighbour stays a neighbour)
+        facts = memory.extract(text.lstrip().removeprefix(at["label"]))
     if not facts:
         return {}, False
-    plain, sensitive = memory.split_sensitive(facts)
-    tools.merge_memory(conn, uid, plain)
-    if sensitive:
-        if tools.has_consent(conn, uid):
-            tools.merge_memory(conn, uid, sensitive)
-        else:
-            tools.set_pending(conn, uid, sensitive)
-            return facts, True
-    return facts, False
+    at_place, general = memory.split_place(facts) if at else ({}, facts)
+    consent = tools.has_consent(conn, uid)
+    need_consent = False
+    for part, keep, park in (
+            (general, lambda f: tools.merge_memory(conn, uid, f), lambda f: tools.set_pending(conn, uid, f)),
+            (at_place, lambda f: tools.merge_place_facts(conn, at["id"], f),
+             lambda f: tools.set_place_pending(conn, at["id"], f))):
+        if not part:
+            continue
+        plain, sensitive = memory.split_sensitive(part)
+        keep(plain)
+        if sensitive:
+            if consent:
+                keep(sensitive)
+            else:
+                park(sensitive)
+                need_consent = True
+    return facts, need_consent
 
 
 def _consent_quick() -> list[QuickReply]:
@@ -470,12 +489,15 @@ def _consent_quick() -> list[QuickReply]:
 
 
 def _assess(conn, uid: int, lat: float, lon: float, label: str, approx: bool,
-            extra: list[str] | None = None, saved: str | None = None
+            extra: list[str] | None = None, saved: str | None = None, loc_id: int | None = None
             ) -> tuple[str, list[dict], list[answer.WebSwap]]:
     """Reply text, the sources (stations, shelter, GISTDA) whose numbers that text shows, and the web swaps.
-    saved: the label this place was just saved under. Alerts are promised only when a station is in range."""
+    saved: the label this place was just saved under. Alerts are promised only when a station is in range.
+    loc_id: the saved place this is (else the one labelled label or saved): its own facts join the general ones."""
     prof = tools.get_user_profile(conn, uid)
-    mem = memory.merged_view(prof["memory"], prof["pending"])
+    loc = next((l for l in prof["locations"] if l["id"] == loc_id), None) or next(
+        (l for l in prof["locations"] if l["label"] in (label, saved)), None)
+    mem = memory.view(prof["memory"], loc, prof["pending"])
     stations = tools.get_nearest_stations(conn, lat, lon, k=3)
     if saved:
         extra = [f"📌 บันทึก \"{saved}\" ไว้แล้ว " + ("ถ้าน้ำที่สถานีใกล้ๆ สูงขึ้น จะส่งข้อความเตือน" if stations
@@ -586,7 +608,7 @@ def _mostly_place(t: str, place) -> bool:
 
 def _talk(conn, uid: int, t: str, force: bool = False) -> Reply:
     """force: answer as a risk question even without flood words (an evacuation question)."""
-    facts, need_consent = _remember(conn, uid, t)
+    said = t                              # the whole message, for its facts: t below may lose its later clauses
     if here := _save_here(conn, uid, t):
         return here
     others = _save_other_clauses(conn, uid, t)
@@ -611,13 +633,25 @@ def _talk(conn, uid: int, t: str, force: bool = False) -> Reply:
     if place and not (asks or label or _mostly_place(t, place)):
         place = None                     # a place mentioned in passing, not a question about it
     if place and not place.amphoe:
+        _, need_consent = _remember(conn, uid, said)
         return _ask_place(label, [], hill, assure, need_consent, province=place.province)
     cands = [] if place or not (asks or label) else place_candidates(t, skip=saved_labels)
     tight = t.replace(" ", "")
     hits = [l for l in prof["locations"] if l["label"] in tight]
     hits = [l for l in hits if not any(l is not o and l["label"] in o["label"] for o in hits)]
     if asks and not place and len(hits) >= 2:
+        _remember(conn, uid, said)
         return _choose_place(hits, hill, assure)      # "บ้านแม่กับร้านท่วมไหม": which one first?
+    # Where this message's facts belong: the place it saves now ("บ้านแม่อยู่บางบาล ยายติดเตียง"), else the saved
+    # place it names ("ร้านส้มตำมีหมา"), else nowhere in particular (general).
+    at = None
+    if place and label:
+        at = {"id": tools.save_location(conn, uid, label, place.lat, place.lon, notes=APPROX_NOTE + place.label),
+              "label": label}
+    elif named:
+        at = named
+    facts, need_consent = _remember(conn, uid, said, at)
+    prof = tools.get_user_profile(conn, uid)
     qlabel = _question_label(t)
     missing = qlabel if qlabel and asks and not named and not place else None
     # The message names a place we could not pin down ("บ้านอยู่ตีนดอยสุเทพ", a "บ้านแม่" or "ร้าน" not saved):
@@ -625,15 +659,13 @@ def _talk(conn, uid: int, t: str, force: bool = False) -> Reply:
     unresolved = not place and bool(cands or missing or (label and (label not in saved_labels or "อยู่" in t)))
     target = None
     if place:
-        target = (place.lat, place.lon, (label + " " if label else "") + place.label, True)
-        if label:
-            tools.save_location(conn, uid, label, place.lat, place.lon, notes=APPROX_NOTE + place.label)
+        target = (place.lat, place.lon, (label + " " if label else "") + place.label, True, at and at["id"])
     elif prof["locations"] and asks and not unresolved:
         home = next((l for l in prof["locations"] if l["label"] == HOME), None)
         if not named and not home and len(prof["locations"]) > 1:
             return _choose_place(prof["locations"], hill, assure)   # no home and no place named: which one?
         loc = named or home or prof["locations"][0]
-        target = (loc["lat"], loc["lon"], loc["label"], _approx(loc))
+        target = (loc["lat"], loc["lon"], loc["label"], _approx(loc), loc["id"])
 
     if target:
         extra = []
@@ -641,7 +673,8 @@ def _talk(conn, uid: int, t: str, force: bool = False) -> Reply:
             extra.append(ASSURE_NOTE)
         if hill:
             extra.append(HILL_NOTE)
-        if not prof["memory"].get("household") and not prof["pending"]:
+        here_loc = next((l for l in prof["locations"] if l["id"] == target[4]), None)
+        if not memory.view(prof["memory"], here_loc, prof["pending"])["household"] and not prof["pending_any"]:
             extra.append("👪 ที่บ้านมีผู้สูงอายุ คนที่เดินไม่ได้ เด็กเล็ก หรือสัตว์เลี้ยงไหม? บอกได้ จะช่วยวางแผนให้เหมาะกับครอบครัว")
         extra += [f"📌 บันทึก \"{o}\" ไว้ด้วยแล้ว" for o in others]
         quick = [LOCATION_Q, PROFILE_Q]
@@ -649,16 +682,18 @@ def _talk(conn, uid: int, t: str, force: bool = False) -> Reply:
             extra.append(CONSENT_PROMPT)
             quick = _consent_quick()
         saved = label if label and place else None
-        text, sources, swaps = _assess(conn, uid, target[0], target[1], target[2], target[3], extra, saved=saved)
+        text, sources, swaps = _assess(conn, uid, target[0], target[1], target[2], target[3], extra, saved=saved,
+                                       loc_id=target[4])
         place_info = {"label": target[2], "lat": target[0], "lon": target[1], "approx": target[3],
                       "saved_label": saved}
         return Reply(text, quick, sources=sources, place=place_info, extra=extra, web_swaps=swaps)
 
     if facts and not asks:
-        lines = memory.describe(facts)
+        lines = memory.describe(facts, home=not at or memory.is_home(at["label"]))
+        where = f" ({at['label']})" if at else ""
         if need_consent:
-            return Reply("รับทราบค่ะ: " + ", ".join(lines) + "\n\n" + CONSENT_PROMPT, _consent_quick())
-        return Reply("รับทราบและบันทึกแล้วค่ะ: " + ", ".join(lines), [PROFILE_Q])
+            return Reply(f"รับทราบค่ะ{where}: " + ", ".join(lines) + "\n\n" + CONSENT_PROMPT, _consent_quick())
+        return Reply(f"รับทราบและบันทึกแล้วค่ะ{where}: " + ", ".join(lines), [PROFILE_Q])
     if unresolved or asks:
         reply = _ask_place(label, cands, hill, assure, need_consent,
                            missing=missing if missing and "อยู่" not in t else None)
@@ -696,9 +731,11 @@ def _save_here(conn, uid: int, t: str) -> Reply | None:
     gps = _recent(conn, uid, "_gps", GPS_TTL) if name else None
     if not gps:
         return None
-    tools.save_location(conn, uid, name, gps["lat"], gps["lon"])
-    text, sources, swaps = _assess(conn, uid, gps["lat"], gps["lon"], name, False, saved=name)
-    return Reply(text, [PROFILE_Q], sources=sources, web_swaps=swaps,
+    loc_id = tools.save_location(conn, uid, name, gps["lat"], gps["lon"])
+    _, need_consent = _remember(conn, uid, t, {"id": loc_id, "label": name})
+    extra = [CONSENT_PROMPT] if need_consent else []
+    text, sources, swaps = _assess(conn, uid, gps["lat"], gps["lon"], name, False, extra, saved=name, loc_id=loc_id)
+    return Reply(text, _consent_quick() if need_consent else [PROFILE_Q], sources=sources, web_swaps=swaps,
                  place={"label": name, "lat": gps["lat"], "lon": gps["lon"], "approx": False, "saved_label": name})
 
 
@@ -752,16 +789,19 @@ def _ask_place(label: str | None, cands: list, hill: bool, assure: bool, need_co
 
 def _shelters(conn, uid: int, t: str) -> Reply:
     """Shelters near a named place, else near a saved place (the one named in the text, else the first)."""
-    _, need_consent = _remember(conn, uid, t)
     prof = tools.get_user_profile(conn, uid)
     place = _find_place(t)
+    named = None if place else _saved_named(t, prof["locations"])
+    _, need_consent = _remember(conn, uid, t, named)
+    prof = tools.get_user_profile(conn, uid)
+    loc = None
     if place and not place.amphoe:
         return Reply(f"จ.{place.province} กว้างเกินไปค่ะ บอกอำเภอหรือตำบล หรือกดแชร์ตำแหน่ง "
                      "แล้วจะหาศูนย์พักพิงที่ใกล้ที่สุดให้\nถ้าต้องการความช่วยเหลือด่วน โทร 1784 ได้ทันที", [LOCATION_Q])
     if place:
         lat, lon, label, approx = place.lat, place.lon, place.label, True
     elif prof["locations"]:
-        loc = _saved_named(t, prof["locations"]) or prof["locations"][0]
+        loc = next((l for l in prof["locations"] if named and l["id"] == named["id"]), None) or prof["locations"][0]
         lat, lon, label = loc["lat"], loc["lon"], loc["label"]
         approx = _approx(loc)
     else:
@@ -770,7 +810,7 @@ def _shelters(conn, uid: int, t: str) -> Reply:
         if need_consent:
             return Reply(text + "\n\n" + CONSENT_PROMPT, _consent_quick())
         return Reply(text, [LOCATION_Q])
-    mem = memory.merged_view(prof["memory"], prof["pending"])
+    mem = memory.view(prof["memory"], loc, prof["pending"])
     hh = mem.get("household") or {}
     need_patients = bool(hh.get("immobile"))
     shelters = tools.find_shelters(conn, lat, lon, {"patients": need_patients, "pets": bool(hh.get("pets"))}, k=3)
@@ -874,7 +914,7 @@ def _home(conn, uid: int) -> Reply:
         return Reply("ยังไม่ได้บันทึก \"บ้าน\" ค่ะ กดแชร์ตำแหน่งที่บ้านได้เลย "
                      "น้ำมาจะบันทึกไว้และแจ้งเตือนเมื่อน้ำสูงขึ้น", [LOCATION_Q])
     approx = bool(loc["notes"] and loc["notes"].startswith("ประมาณ"))
-    text, sources, swaps = _assess(conn, uid, loc["lat"], loc["lon"], HOME, approx, [])
+    text, sources, swaps = _assess(conn, uid, loc["lat"], loc["lon"], HOME, approx, [], loc_id=loc["id"])
     return Reply(text, [LOCATION_Q, PROFILE_Q], sources=sources, web_swaps=swaps,
                  place={"label": HOME, "lat": loc["lat"], "lon": loc["lon"], "approx": approx, "saved_label": None})
 
@@ -905,7 +945,7 @@ def _emergency(conn, uid: int, t: str, gps: tuple[float, float] | None = None) -
     _set_pref(conn, uid, "_sos", time.time())
     _remember(conn, uid, t)   # parks sensitive facts; the call details below still use them, for this reply only
     prof = tools.get_user_profile(conn, uid)
-    d = triage.call_details(t, memory.merged_view(prof["memory"], prof["pending"]))
+    d = triage.call_details(t, memory.view(prof["memory"], _saved_named(t, prof["locations"]), prof["pending"]))
     tell = []
     if gps:
         tell.append(f"• ตำแหน่ง: พิกัด {gps[0]:.5f}, {gps[1]:.5f} (จากตำแหน่งที่แชร์)")
@@ -931,7 +971,8 @@ def _emergency(conn, uid: int, t: str, gps: tuple[float, float] | None = None) -
 def _profile(conn, uid: int) -> Reply:
     prof = tools.get_user_profile(conn, uid)
     lines = memory.describe(prof["memory"])
-    locs = [f"📍 {l['label']}" for l in prof["locations"]]
+    locs = [f"📍 {l['label']}" + (f": {', '.join(d)}" if (d := memory.describe(l["facts"], memory.is_home(l["label"])))
+                                   else "") for l in prof["locations"]]
     if not lines and not locs:
         head = "ตอนนี้ยังไม่ได้จำข้อมูลอะไรเกี่ยวกับคุณค่ะ"
     else:
@@ -939,11 +980,17 @@ def _profile(conn, uid: int) -> Reply:
     text = head + "\n\nเพิ่มหรือแก้ไขได้ค่ะ: กดปุ่มด้านล่าง หรือพิมพ์ เช่น \"บ้านแม่อยู่บางระกำ พิษณุโลก\""
     quick = [_q("📍 ตั้งตำแหน่งบ้าน", SET_HOME), _q("➕ เพิ่มสถานที่", ADD_PLACE), _q("➕ ข้อมูลครอบครัว", ADD_FACTS)]
     quick += [_q(f"ลบ {l['label']}") for l in prof["locations"][:4]]
-    if prof["memory"].get("household") or prof["memory"].get("needs"):
+    if _health_kept(prof):
         quick.append(_q("ลบข้อมูลสุขภาพ"))
     if lines or locs:
         quick.append(_q("ลบข้อมูลทั้งหมด"))
     return Reply(text, quick[:13])
+
+
+def _health_kept(prof: dict) -> bool:
+    """Household or health facts are kept, generally or at some saved place."""
+    return bool(prof["memory"].get("household") or prof["memory"].get("needs")
+                or any((l["facts"] or {}).get("household") for l in prof["locations"]))
 
 
 def _forget(conn, uid: int, t: str) -> Reply:
@@ -962,7 +1009,7 @@ def _forget(conn, uid: int, t: str) -> Reply:
         return Reply("ลบข้อมูลทั้งหมดแล้วค่ะ")
     if target == "ข้อมูลสุขภาพ":
         prof = tools.get_user_profile(conn, uid)
-        if not (prof["memory"].get("household") or prof["memory"].get("needs") or prof["pending"]):
+        if not (_health_kept(prof) or prof["pending_any"]):
             return Reply("ไม่มีข้อมูลสุขภาพที่บันทึกไว้ค่ะ", [PROFILE_Q])
         tools.forget(conn, uid, "household")
         tools.forget(conn, uid, "needs")

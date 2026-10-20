@@ -90,7 +90,7 @@ def run(conn, now: datetime | None = None) -> list[dict]:
         if not action:
             continue
         if action == "push":
-            mem = prof["memory"]
+            mem = memory.view(prof["memory"], loc)     # this place's facts (the shop's dog) with the general ones
             hh = mem.get("household") or {}
             shelters = tools.find_shelters(conn, loc["lat"], loc["lon"],
                                            {"patients": bool(hh.get("immobile")), "pets": bool(hh.get("pets"))})

@@ -128,3 +128,32 @@ def test_signed_in_user_is_line_linked(seeded):
     token = login(client, "user")
     d = _profile(client, token=token).json()["data"]
     assert d["line_linked"] is True and d["places"] == []
+
+
+def test_a_place_has_its_own_facts(seeded):
+    """places[].facts: what holds at that place only. Deleting and renaming there leave the general facts alone."""
+    client, _ = seeded
+    sid = str(uuid.uuid4())
+    _chat(client, {"session_id": sid, "message": "ร้านอยู่บางบาล อยุธยา น้ำจะถึงไหม"})
+    _chat(client, {"session_id": sid, "message": "ร้านมีหมา"})                 # a pet: kept without consent
+    _chat(client, {"session_id": sid, "message": "มีรถยนต์"})                  # general
+    d = _profile(client, sid).json()["data"]
+    assert d["pending_consent"] is False
+    [shop] = d["places"]
+    [pets] = shop["facts"]
+    assert pets == {"kind": "household", "text": "สัตว์เลี้ยง: หมา", "sensitive": False, "list": "pets", "names": ["หมา"]}
+    assert [f["text"] for f in d["facts"]] == ["มีรถยนต์"]
+
+    body = {"list": "pets", "from": "หมา", "to": "หมาโบ้", "place": shop["id"]}
+    r = _profile(client, sid, method="PATCH", path="/names", json=body)
+    assert r.status_code == 200 and r.json()["data"]["places"][0]["facts"][0]["names"] == ["หมาโบ้"]
+    assert _profile(client, str(uuid.uuid4()), method="PATCH", path="/names", json=body).status_code == 404
+
+    r = _profile(client, sid, method="DELETE", path="/facts/household")       # the general ones: the dog stays
+    assert r.json()["data"]["places"][0]["facts"] != []
+    assert _profile(client, sid, method="DELETE", path=f"/places/{shop['id']}/facts/needs").status_code == 400
+    r = _profile(client, sid, method="DELETE", path=f"/places/{shop['id']}/facts/household")
+    assert r.status_code == 200 and r.json()["data"]["places"][0]["facts"] == []
+    assert r.json()["data"]["facts"] != []                                    # the car stays
+    other = str(uuid.uuid4())
+    assert _profile(client, other, method="DELETE", path=f"/places/{shop['id']}/facts/house").status_code == 404

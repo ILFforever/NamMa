@@ -8,7 +8,11 @@ import re
 from agent import llm
 
 SENSITIVE = {"household", "needs"}
+# In a sensitive field but neither health nor vulnerability data: kept without asking for consent ("มีหมา").
+NOT_SENSITIVE = {("household", "pets")}
 FIELDS = ("household", "house", "assets", "needs", "history")
+# Kept for the person wherever they are, never for one place (a dialysis need goes with them).
+PERSON_ONLY = {"needs"}
 
 WHO = (r"(คุณยาย|คุณตา|แม่ยาย|พ่อตา|ลูกชาย|ลูกสาว|น้องชาย|น้องสาว|พี่ชาย|พี่สาว|ยาย|ตา|ปู่|ย่า|พ่อ|แม่|ลูก|สามี|"
        r"ภรรยา|เมีย|ผัว|น้อง|พี่|หลาน|ป้า|ลุง|น้า|อา(?!ยุ|การ|หาร))")
@@ -120,16 +124,56 @@ def extract(text: str) -> dict:
 
 
 def split_sensitive(facts: dict) -> tuple[dict, dict]:
-    return ({k: v for k, v in facts.items() if k not in SENSITIVE},
-            {k: v for k, v in facts.items() if k in SENSITIVE})
+    """(kept without consent, waits for consent). Pets sit in household but are not health data."""
+    plain, sensitive = {}, {}
+    for k, v in facts.items():
+        if k not in SENSITIVE:
+            plain[k] = v
+            continue
+        for key, val in v.items():
+            (plain if (k, key) in NOT_SENSITIVE else sensitive).setdefault(k, {})[key] = val
+    return plain, sensitive
+
+
+def is_sensitive(field: str, key: str | None) -> bool:
+    """One profile line's fact: field, and its name list or key ("pets")."""
+    return field in SENSITIVE and (field, key) not in NOT_SENSITIVE
+
+
+def split_place(facts: dict) -> tuple[dict, dict]:
+    """(what belongs to a place, what stays with the person). Medical needs travel with the person."""
+    return ({k: v for k, v in facts.items() if k not in PERSON_ONLY},
+            {k: v for k, v in facts.items() if k in PERSON_ONLY})
+
+
+def merge_facts(*layers: dict) -> dict:
+    """Facts layered field by field: name lists are joined ("ยาย" at home and "ตา" said now), other keys the later
+    layer wins."""
+    out = {k: {} for k in FIELDS}
+    for layer in layers:
+        for k, v in (layer or {}).items():
+            if k not in FIELDS or not isinstance(v, dict):
+                continue
+            for key, val in v.items():
+                old = out[k].get(key)
+                out[k][key] = old + [x for x in val if x not in old] if isinstance(old, list) and isinstance(val, list) \
+                    else val
+    return out
+
+
+def view(memory: dict, loc: dict | None = None, pending: dict | None = None) -> dict:
+    """The facts that hold at one saved place: the general ones plus that place's own. pending: the general facts
+    waiting for consent, to use in *this* conversation only (the place's own waiting ones then join too). None: only
+    what is stored, as alerts use."""
+    layers = [memory, (loc or {}).get("facts")]
+    if pending is not None:
+        layers += [pending, (loc or {}).get("pending")]
+    return merge_facts(*layers)
 
 
 def merged_view(memory: dict, pending: dict) -> dict:
     """Memory plus not-yet-consented facts, for use in *this* conversation only."""
-    out = {k: dict(memory.get(k) or {}) for k in FIELDS}
-    for k, v in (pending or {}).items():
-        out.setdefault(k, {}).update(v)
-    return out
+    return view(memory, None, pending or {})
 
 
 def location_label(text: str) -> str | None:
@@ -153,8 +197,10 @@ def location_label(text: str) -> str | None:
 NAME_LISTS = {"immobile": "household", "pets": "household", "past_floods": "history"}
 
 
-def describe_items(memory: dict) -> list[tuple[str, str | None, list[str]]]:
-    """(Thai line, name list it shows or None, the names in it). One line per past flood, so each renames alone."""
+def describe_items(memory: dict, home: bool = True) -> list[tuple[str, str | None, list[str]]]:
+    """(Thai line, name list it shows or None, the names in it). One line per past flood, so each renames alone.
+    home: False for a place that is not a home ("ร้านส้มตำ"): "2 ชั้น", not "บ้าน 2 ชั้น"."""
+    b = "บ้าน" if home else ""
     hh, needs, house, assets, hist = (memory.get(k) or {} for k in ("household", "needs", "house", "assets", "history"))
     items: list[tuple[str, str | None, list[str]]] = []
     if hh.get("immobile"):
@@ -169,11 +215,11 @@ def describe_items(memory: dict) -> list[tuple[str, str | None, list[str]]]:
         if needs.get(k):
             items.append((th, None, []))
     if house.get("stories"):
-        items.append((f"บ้าน {house['stories']} ชั้น", None, []))
+        items.append((f"{b} {house['stories']} ชั้น".strip(), None, []))
     if house.get("raised"):
-        items.append(("บ้านใต้ถุนสูง", None, []))
+        items.append((b + "ใต้ถุนสูง", None, []))
     if house.get("near_water"):
-        items.append(("บ้านติดคลอง/ริมน้ำ", None, []))
+        items.append((b + "ติดคลอง/ริมน้ำ", None, []))
     if assets.get("car"):
         items.append(("มีรถยนต์", None, []))
     if assets.get("motorbike"):
@@ -183,6 +229,11 @@ def describe_items(memory: dict) -> list[tuple[str, str | None, list[str]]]:
     return items
 
 
-def describe(memory: dict) -> list[str]:
+def describe(memory: dict, home: bool = True) -> list[str]:
     """Thai lines for the profile view."""
-    return [line for line, _, _ in describe_items(memory)]
+    return [line for line, _, _ in describe_items(memory, home)]
+
+
+def is_home(label: str) -> bool:
+    """"บ้าน", "บ้านแม่": a home, described as one; "ร้านส้มตำ", "ที่ทำงาน" are not."""
+    return label.startswith("บ้าน") or label.startswith(("คอนโด", "หอ"))
