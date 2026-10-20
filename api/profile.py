@@ -1,12 +1,13 @@
 """What NamMa remembers about the person chatting (docs/api.md → Profile): saved places, stated facts, consent.
 
-The web ProfilePanel shows it beside the chat and deletes from it (CLAUDE.md §7: user control). Who is asking:
+The web ProfilePanel shows it beside the chat, renames places and names, and deletes from it (CLAUDE.md §7: user control). Who is asking:
 the signed-in user, else the anonymous web chat session from the X-Chat-Session header (the same session_id
 POST /api/chat uses, so the panel shows what that chat saved). Nothing is created here: no user, empty profile.
 """
 import psycopg
 from fastapi import APIRouter, Depends, Header
 from psycopg.rows import tuple_row
+from pydantic import BaseModel, Field
 
 from agent import memory, tools
 from api.auth import current_user
@@ -16,6 +17,23 @@ router = APIRouter()
 
 FACT_KINDS = ("household", "needs", "house", "assets", "history")
 APPROX_PREFIX = "ประมาณจากชื่อพื้นที่:"
+
+
+class PlaceRename(BaseModel):
+    label: str = Field(max_length=40)
+
+
+class NameRename(BaseModel):
+    list: str = Field(max_length=20)            # one of memory.NAME_LISTS
+    from_: str = Field(alias="from", max_length=200)
+    to: str = Field(max_length=60)
+
+
+def _new_name(raw: str) -> str:
+    name = " ".join(raw.split())
+    if not name:
+        raise ApiError(400, "bad_request", "name is empty")
+    return name
 
 
 def _user_id(conn: psycopg.Connection, user: dict | None, chat_session: str | None) -> int | None:
@@ -61,8 +79,8 @@ def _profile(conn: psycopg.Connection, uid: int | None, line_linked: bool) -> di
         return empty
     prof = tools.get_user_profile(conn, uid)
     mem = prof["memory"] or {}
-    facts = [{"kind": k, "text": line, "sensitive": k in memory.SENSITIVE}
-             for k in FACT_KINDS for line in memory.describe({k: mem.get(k) or {}})]
+    facts = [{"kind": k, "text": line, "sensitive": k in memory.SENSITIVE, "list": lst, "names": names}
+             for k in FACT_KINDS for line, lst, names in memory.describe_items({k: mem.get(k) or {}})]
     consent = conn.execute("SELECT granted, ts FROM consents WHERE user_id = %s AND kind = 'sensitive_memory' "
                            "ORDER BY ts DESC LIMIT 1", (uid,)).fetchone()
     return {
@@ -89,6 +107,45 @@ def delete_place(place_id: int, user: dict | None = Depends(current_user), x_cha
                                        (place_id, uid)).fetchone():
         raise ApiError(404, "not_found", f"place {place_id} not found")
     tools.forget(conn, uid, f"location:{place_id}")
+    return envelope(conn, _profile(conn, uid, line_linked=bool(user and tools.is_line_id(user["line_user_id"]))))
+
+
+@router.patch("/api/profile/places/{place_id}")
+def rename_place(place_id: int, body: PlaceRename, user: dict | None = Depends(current_user),
+                 x_chat_session: str | None = Header(None), conn: psycopg.Connection = Depends(get_db)):
+    """A place is known by its label in chat and in LINE alerts, so two places can't share one (save_location
+    upserts by label): 409 when another place already has it."""
+    label = _new_name(body.label)
+    uid = _user_id(conn, user, x_chat_session)
+    if uid is None or not conn.execute("SELECT 1 FROM user_locations WHERE id = %s AND user_id = %s",
+                                       (place_id, uid)).fetchone():
+        raise ApiError(404, "not_found", f"place {place_id} not found")
+    if conn.execute("SELECT 1 FROM user_locations WHERE user_id = %s AND label = %s AND id <> %s",
+                    (uid, label, place_id)).fetchone():
+        raise ApiError(409, "label_taken", f"another place is already called {label}")
+    conn.execute("UPDATE user_locations SET label = %s WHERE id = %s", (label, place_id))
+    return envelope(conn, _profile(conn, uid, line_linked=bool(user and tools.is_line_id(user["line_user_id"]))))
+
+
+@router.patch("/api/profile/names")
+def rename_name(body: NameRename, user: dict | None = Depends(current_user), x_chat_session: str | None = Header(None),
+                conn: psycopg.Connection = Depends(get_db)):
+    """Rename one name the person gave (a person who can't walk, a pet, a past flood): Profile facts[].names.
+    The rest of memory is a fixed checklist (มีรถยนต์, บ้าน 2 ชั้น) with nothing to rename."""
+    field = memory.NAME_LISTS.get(body.list)
+    if field is None:
+        raise ApiError(400, "bad_request", f"unknown list: {body.list}")
+    to = _new_name(body.to)
+    uid = _user_id(conn, user, x_chat_session)
+    row = conn.execute(f"SELECT {field} FROM user_memory WHERE user_id = %s", (uid,)).fetchone() if uid else None
+    names = list(((row[0] if row else None) or {}).get(body.list) or [])
+    if body.from_ not in names:
+        raise ApiError(404, "not_found", f"{body.list} has no {body.from_}")
+    if to != body.from_:
+        if to in names:
+            raise ApiError(409, "name_taken", f"{body.list} already has {to}")
+        names[names.index(body.from_)] = to
+        tools.merge_memory(conn, uid, {field: {body.list: names}})
     return envelope(conn, _profile(conn, uid, line_linked=bool(user and tools.is_line_id(user["line_user_id"]))))
 
 

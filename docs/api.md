@@ -263,8 +263,9 @@ Who: the signed-in account (LINE or Google), else the anonymous chat from the **
                 "where": "อ.บางบาล จ.พระนครศรีอยุธยา",
                 "nearest": { "station_id": 2608, "code": "C.37", "name_th": "บ้านบางบาล", "distance_km": 1.3,
                              "risk_tier": "warning", "diff_wl_bank": -0.06, "observed_at": "…" } } ],
-  "facts": [ { "kind": "household", "text": "ผู้ที่เดินไม่ได้/ติดเตียง: ยาย", "sensitive": true },
-             { "kind": "house", "text": "บ้าน 2 ชั้น", "sensitive": false } ],
+  "facts": [ { "kind": "household", "text": "ผู้ที่เดินไม่ได้/ติดเตียง: ยาย", "sensitive": true,
+               "list": "immobile", "names": ["ยาย"] },
+             { "kind": "house", "text": "บ้าน 2 ชั้น", "sensitive": false, "list": null, "names": [] } ],
   "consent": { "granted": true, "ts": "…" },   // latest sensitive_memory decision; ts null = never asked
   "pending_consent": false,                     // a sensitive fact waits for consent (not shown, not saved)
   "line_linked": false                          // the account has a LINE id (gets LINE alerts)
@@ -272,9 +273,19 @@ Who: the signed-in account (LINE or Google), else the anonymous chat from the **
 ```
 - `approx`: the place was geocoded from its name, not a GPS share. `nearest` is null when no fresh station is within 60 km.
 - `facts[].kind` is one of `household`, `needs` (sensitive), `house`, `assets`, `history`.
+- `facts[].list`: the names the person gave that the line shows, which can be renamed: `immobile` (who can't walk),
+  `pets`, `past_floods` (one line each). `null` for checklist facts (มีรถยนต์, บ้าน 2 ชั้น), which have no name.
 
 ### `DELETE /api/profile/places/{id}` → `Profile`
 404 if the place isn't this person's.
+
+### `PATCH /api/profile/places/{id}` → `Profile`
+Body `{ "label": "บ้านคุณแม่" }` (≤ 40 chars, spaces trimmed). 404 if the place isn't this person's, 400 if the
+label is empty, 409 `label_taken` if another of their places already has it (chat and LINE alerts name places by label).
+
+### `PATCH /api/profile/names` → `Profile`
+Body `{ "list": "immobile", "from": "ยาย", "to": "ยายสมศรี" }` (`to` ≤ 60 chars, spaces trimmed). 400 for an
+unknown list or an empty name, 404 if `from` isn't in that list, 409 `name_taken` if `to` already is.
 
 ### `DELETE /api/profile/facts/{kind}` → `Profile`
 `kind`: a fact kind, or `all` (every fact and place, and any fact waiting for consent).

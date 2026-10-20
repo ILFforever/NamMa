@@ -149,31 +149,40 @@ def location_label(text: str) -> str | None:
     return label
 
 
-def describe(memory: dict) -> list[str]:
-    """Thai lines for the profile view."""
+# The facts that hold names the person gave, so the profile can rename them: list → its user_memory field.
+NAME_LISTS = {"immobile": "household", "pets": "household", "past_floods": "history"}
+
+
+def describe_items(memory: dict) -> list[tuple[str, str | None, list[str]]]:
+    """(Thai line, name list it shows or None, the names in it). One line per past flood, so each renames alone."""
     hh, needs, house, assets, hist = (memory.get(k) or {} for k in ("household", "needs", "house", "assets", "history"))
-    lines = []
+    items: list[tuple[str, str | None, list[str]]] = []
     if hh.get("immobile"):
-        lines.append("ผู้ที่เดินไม่ได้/ติดเตียง: " + ", ".join(hh["immobile"]))
+        items.append(("ผู้ที่เดินไม่ได้/ติดเตียง: " + ", ".join(hh["immobile"]), "immobile", list(hh["immobile"])))
     for k, th in (("elderly", "มีผู้สูงอายุ"), ("children", "มีเด็กเล็ก"), ("pregnant", "มีคนตั้งครรภ์")):
         if hh.get(k):
-            lines.append(th)
+            items.append((th, None, []))
     if hh.get("pets"):
-        lines.append("สัตว์เลี้ยง: " + ", ".join(hh["pets"]))
+        items.append(("สัตว์เลี้ยง: " + ", ".join(hh["pets"]), "pets", list(hh["pets"])))
     for k, th in (("dialysis", "ต้องฟอกไต"), ("oxygen", "ใช้ออกซิเจน"), ("power_dependent", "ใช้อุปกรณ์ที่ต้องใช้ไฟฟ้า"),
                   ("medication", "มียาประจำ")):
         if needs.get(k):
-            lines.append(th)
+            items.append((th, None, []))
     if house.get("stories"):
-        lines.append(f"บ้าน {house['stories']} ชั้น")
+        items.append((f"บ้าน {house['stories']} ชั้น", None, []))
     if house.get("raised"):
-        lines.append("บ้านใต้ถุนสูง")
+        items.append(("บ้านใต้ถุนสูง", None, []))
     if house.get("near_water"):
-        lines.append("บ้านติดคลอง/ริมน้ำ")
+        items.append(("บ้านติดคลอง/ริมน้ำ", None, []))
     if assets.get("car"):
-        lines.append("มีรถยนต์")
+        items.append(("มีรถยนต์", None, []))
     if assets.get("motorbike"):
-        lines.append("มีรถจักรยานยนต์")
+        items.append(("มีรถจักรยานยนต์", None, []))
     for h in hist.get("past_floods") or []:
-        lines.append(f"เคยท่วม: {h}")
-    return lines
+        items.append((f"เคยท่วม: {h}", "past_floods", [h]))
+    return items
+
+
+def describe(memory: dict) -> list[str]:
+    """Thai lines for the profile view."""
+    return [line for line, _, _ in describe_items(memory)]

@@ -8,13 +8,14 @@ from tests.conftest import login
 from tests.test_api_chat import STATION, _chat, seeded  # noqa: F401  (seeded is a fixture)
 
 
-def _profile(client, sid: str | None = None, token: str | None = None, method: str = "GET", path: str = ""):
+def _profile(client, sid: str | None = None, token: str | None = None, method: str = "GET", path: str = "",
+             json: dict | None = None):
     headers = {}
     if sid:
         headers["X-Chat-Session"] = sid
     if token:
         headers["Authorization"] = f"Bearer {token}"
-    return client.request(method, "/api/profile" + path, headers=headers)
+    return client.request(method, "/api/profile" + path, headers=headers, json=json)
 
 
 def test_unknown_session_gets_an_empty_profile_and_creates_no_user(seeded):
@@ -80,6 +81,46 @@ def test_another_session_cannot_delete_my_place(seeded):
     pid = _profile(client, mine).json()["data"]["places"][0]["id"]
     assert _profile(client, theirs, method="DELETE", path=f"/places/{pid}").status_code == 404
     assert _profile(client, mine).json()["data"]["places"][0]["id"] == pid
+
+
+def test_rename_a_place(seeded):
+    client, _ = seeded
+    sid, theirs = str(uuid.uuid4()), str(uuid.uuid4())
+    _chat(client, {"session_id": sid, "message": "บ้านแม่อยู่บางบาล อยุธยา น้ำจะถึงไหม"})
+    _chat(client, {"session_id": sid, "message": "บ้านอยู่บางบาล อยุธยา"})
+    places = _profile(client, sid).json()["data"]["places"]
+    pid = next(p["id"] for p in places if p["label"] == "บ้านแม่")
+
+    r = _profile(client, sid, method="PATCH", path=f"/places/{pid}", json={"label": "  บ้านคุณแม่ "})
+    assert r.status_code == 200
+    assert {p["label"] for p in r.json()["data"]["places"]} == {"บ้านคุณแม่", "บ้าน"}
+
+    assert _profile(client, sid, method="PATCH", path=f"/places/{pid}", json={"label": "บ้าน"}).status_code == 409
+    assert _profile(client, sid, method="PATCH", path=f"/places/{pid}", json={"label": "  "}).status_code == 400
+    assert _profile(client, theirs, method="PATCH", path=f"/places/{pid}", json={"label": "x"}).status_code == 404
+
+
+def test_rename_a_name_in_memory(seeded):
+    client, _ = seeded
+    sid = str(uuid.uuid4())
+    _chat(client, {"session_id": sid, "message": "ยายติดเตียง บ้านสองชั้น"})
+    _chat(client, {"session_id": sid, "postback": "consent:sensitive_memory:yes"})
+    facts = _profile(client, sid).json()["data"]["facts"]
+    [hh] = [f for f in facts if f["list"] == "immobile"]
+    assert hh["names"] == ["ยาย"]
+    assert all(f["list"] is None and f["names"] == [] for f in facts if f["kind"] == "house")
+
+    body = {"list": "immobile", "from": "ยาย", "to": "ยายสมศรี"}
+    r = _profile(client, sid, method="PATCH", path="/names", json=body)
+    assert r.status_code == 200
+    [hh] = [f for f in r.json()["data"]["facts"] if f["list"] == "immobile"]
+    assert hh["names"] == ["ยายสมศรี"] and "ยายสมศรี" in hh["text"]
+
+    assert _profile(client, sid, method="PATCH", path="/names", json=body).status_code == 404       # ยาย is gone
+    assert _profile(client, sid, method="PATCH", path="/names",
+                    json={**body, "list": "car"}).status_code == 400
+    assert _profile(client, str(uuid.uuid4()), method="PATCH", path="/names",
+                    json={**body, "from": "ยายสมศรี"}).status_code == 404
 
 
 def test_signed_in_user_is_line_linked(seeded):
