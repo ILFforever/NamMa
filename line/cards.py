@@ -6,7 +6,10 @@ import re
 from agent.answer import _forecast, _ts
 from agent.risk import TIER_TH
 
-TIER_COLOR = {"normal": "#2F9E44", "watch": "#F59F00", "warning": "#F76707", "danger": "#E03131"}
+# The web design system's tier tokens (namma-web tokens.css): a soft band with dark ink, not a bright fill.
+TIER_COLOR = {"normal": "#4D6178", "watch": "#E9B81F", "warning": "#D9600F", "danger": "#A8102F"}
+TIER_SOFT = {"normal": "#E4EAF2", "watch": "#FBF0C9", "warning": "#FBE2CF", "danger": "#F8DDE2"}
+TIER_INK = {"normal": "#3A4C61", "watch": "#735600", "warning": "#9A3D00", "danger": "#8F0D27"}
 INK, MUTED = "#10264F", "#5B6B86"
 LINE_URL = "https://line.me/R/ti/p/%401784DDPM"
 
@@ -85,12 +88,13 @@ def risk_card(place: dict, sources: list[dict], saved_label: str | None) -> dict
                    + (" • ตำแหน่งประมาณจากชื่อพื้นที่" if place.get("approx") else ""), size="xxs", color=MUTED),
              _text("น้ำมาไม่ใช่หน่วยงานทางการ ติดตามประกาศและทำตามคำสั่งอพยพของ ปภ. เสมอ", size="xxs", color=MUTED)]
     return {"type": "bubble", "size": "mega",
-            "header": {"type": "box", "layout": "vertical", "backgroundColor": TIER_COLOR[tier], "paddingAll": "16px",
-                       "contents": [_text(f"📍 {place['label']}", color="#FFFFFF", weight="bold", size="lg"),
-                                    _text(f"ความเสี่ยง: {TIER_TH[tier]}", color="#FFFFFF", size="sm")]},
+            "header": {"type": "box", "layout": "vertical", "backgroundColor": TIER_SOFT[tier], "paddingAll": "16px",
+                       "contents": [_text(f"📍 {place['label']}", color=INK, weight="bold", size="lg"),
+                                    _text(f"ความเสี่ยง: {TIER_TH[tier]}", color=TIER_INK[tier], size="sm",
+                                          weight="bold")]},
             "body": {"type": "box", "layout": "vertical", "spacing": "xs", "contents": body},
             "footer": {"type": "box", "layout": "vertical", "spacing": "sm", "contents": [
-                {"type": "button", "style": "primary", "color": TIER_COLOR[tier], "height": "sm",
+                {"type": "button", "style": "primary", "color": RIVER, "height": "sm",
                  "action": {"type": "uri", "label": "เปิดใน Google Maps", "uri": gmap}},
                 {"type": "button", "style": "secondary", "height": "sm",
                  "action": {"type": "uri", "label": "โทร 1784 (ปภ.)", "uri": "tel:1784"}}]}}
@@ -117,8 +121,8 @@ def risk_messages(reply) -> list[dict] | None:
 # Nothing is added or reworded here: the text the agent built is split into a title, sections, bullet rows and notes,
 # and the DDPM footer becomes tap-to-call buttons. A reply the layout cannot take falls back to plain text.
 
-RIVER, RIVER_SOFT, DANGER = "#1557B0", "#EAF2FC", TIER_COLOR["danger"]
-LINE_GREEN = "#06C755"
+RIVER, RIVER_SOFT, DANGER = "#1557B0", "#DDE9F9", TIER_COLOR["danger"]
+LINE_SOFT = "#DDF3E5"                     # LINE's green, tinted: a secondary button beside the red call
 BRAND = "🌊 น้ำมา NamMa"
 MAX_CARD_TEXT = 3000                     # longer than any canned reply; past it the plain text reads better
 _LEAD_EMOJI = re.compile("^[\U0001F000-\U0001FAFFℹ☀-➿⬀-⯿][️]?\\s*")
@@ -137,7 +141,7 @@ def _call(number: str, label: str, color: str = DANGER) -> dict:
     return _uri_button(label, f"tel:{number}", color, "primary")
 
 
-DDPM_BUTTONS = [_call("1784", "โทร 1784 (ปภ.)"), _uri_button("LINE @1784DDPM", LINE_URL, LINE_GREEN, "primary")]
+DDPM_BUTTONS = [_call("1784", "โทร 1784 (ปภ.)"), _uri_button("LINE @1784DDPM", LINE_URL, LINE_SOFT)]
 
 
 def _bullet(text: str, mark: str, color: str) -> dict:
@@ -153,7 +157,7 @@ def _note(line: str) -> dict:
 
 def _urgent(line: str) -> dict:
     """‼️ lines (someone at home cannot walk): the one thing in the card that must not be missed."""
-    return {"type": "box", "layout": "vertical", "backgroundColor": "#FFF0F0", "cornerRadius": "md",
+    return {"type": "box", "layout": "vertical", "backgroundColor": TIER_SOFT["danger"], "cornerRadius": "md",
             "paddingAll": "10px", "margin": "md", "contents": [_text(line, size="sm", color=DANGER, weight="bold")]}
 
 
@@ -179,7 +183,7 @@ def _title(text: str) -> tuple[str | None, str]:
     return None, text
 
 
-def text_bubble(text: str, accent: str = RIVER, title: str | None = None, buttons: list[dict] | None = None,
+def text_bubble(text: str, accent: str = RIVER, band: str = RIVER_SOFT, title: str | None = None, buttons: list[dict] | None = None,
                 emergency: bool = False) -> dict | None:
     """The reply as one bubble: coloured title band, paragraphs split by separators, DDPM footer as buttons."""
     from agent.answer import FOOTER
@@ -190,7 +194,7 @@ def text_bubble(text: str, accent: str = RIVER, title: str | None = None, button
     footer = text.endswith(FOOTER)
     text = text.removesuffix(FOOTER).strip()
     if emergency or text.startswith(RESCUE_HOTLINE):
-        emergency, accent = True, DANGER
+        emergency, accent, band = True, DANGER, DANGER
         text = text.removeprefix(RESCUE_HOTLINE).strip()
         title = title or "🚨 ถ้าอันตรายตอนนี้ โทรทันที"
     lead = not emergency and title is None   # untitled: the first line says what the reply is about, so it leads
@@ -216,8 +220,9 @@ def text_bubble(text: str, accent: str = RIVER, title: str | None = None, button
     if not body:
         return None
     bubble = {"type": "bubble", "size": "mega",
-              "header": {"type": "box", "layout": "vertical", "backgroundColor": accent, "paddingAll": "14px",
-                         "contents": [_text(title or BRAND, color="#FFFFFF", weight="bold", size="md")]},
+              "header": {"type": "box", "layout": "vertical", "backgroundColor": band, "paddingAll": "14px",
+                         "contents": [_text(title or BRAND, weight="bold", size="md",
+                                            color="#FFFFFF" if emergency else accent)]},
               "body": {"type": "box", "layout": "vertical", "spacing": "sm", "contents": body}}
     foot = list(buttons or [])
     if footer and not emergency:
@@ -242,11 +247,11 @@ def flex(bubble: dict, text: str) -> dict:
 def hotline_bubble() -> dict:
     """The "which numbers" answer: one tap per number instead of a list to copy from."""
     return {"type": "bubble", "size": "mega",
-            "header": {"type": "box", "layout": "vertical", "backgroundColor": DANGER, "paddingAll": "14px",
-                       "contents": [_text("☎️ เบอร์ที่ควรรู้", color="#FFFFFF", weight="bold", size="md"),
-                                    _text("แตะเพื่อโทรได้ทันที", color="#FFFFFF", size="xs")]},
+            "header": {"type": "box", "layout": "vertical", "backgroundColor": TIER_SOFT["danger"], "paddingAll": "14px",
+                       "contents": [_text("☎️ เบอร์ที่ควรรู้", color=TIER_INK["danger"], weight="bold", size="md"),
+                                    _text("แตะเพื่อโทรได้ทันที", color=TIER_INK["danger"], size="xs")]},
             "body": {"type": "box", "layout": "vertical", "spacing": "sm", "contents": [
-                _call("1784", "สายด่วน ปภ. 1784"), _uri_button("LINE @1784DDPM", LINE_URL, LINE_GREEN, "primary"),
+                _call("1784", "สายด่วน ปภ. 1784"), _uri_button("LINE @1784DDPM", LINE_URL, LINE_SOFT),
                 _call("1669", "เจ็บป่วยฉุกเฉิน 1669"),
                 {"type": "box", "layout": "horizontal", "spacing": "sm", "contents": [
                     _uri_button("ตำรวจ 191", "tel:191"), _uri_button("ดับเพลิง 199", "tel:199")]},
@@ -263,6 +268,6 @@ def text_messages(reply) -> list[dict] | None:
 
 
 def alert_messages(text: str, tier: str) -> list[dict] | None:
-    """A pushed alert (agent.alerts.alert_text): the band takes the tier's colour."""
-    bubble = text_bubble(text, accent=TIER_COLOR.get(tier, RIVER))
+    """A pushed alert (agent.alerts.alert_text): the band takes the tier's soft colour."""
+    bubble = text_bubble(text, accent=TIER_INK.get(tier, RIVER), band=TIER_SOFT.get(tier, RIVER_SOFT))
     return [flex(bubble, text)] if bubble else None

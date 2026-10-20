@@ -146,7 +146,7 @@ def test_too_long_or_empty_stays_plain_text():
 
 def test_alert_band_takes_the_tier_colour():
     (msg,) = cards.alert_messages("🟠 เตือนภัยน้ำ — บ้าน\n• ยกของขึ้นที่สูง\n\n" + answer.FOOTER, "warning")
-    assert msg["contents"]["header"]["backgroundColor"] == cards.TIER_COLOR["warning"]
+    assert msg["contents"]["header"]["backgroundColor"] == cards.TIER_SOFT["warning"]
 
 
 def test_every_canned_reply_builds_a_valid_card():
