@@ -148,3 +148,34 @@ def test_saved_places_reach_the_llm_with_their_area(conn, fake_llm, monkeypatch)
     _shop(conn, "U-shop4")
     chat.handle(conn, "U-shop4", "web", text="สวัสดี")
     assert "ร้านส้มตำ (อ.เมืองเชียงราย จ.เชียงราย)" in seen["user"]
+
+
+def _place_labels(conn, ext):  # noqa: F811
+    from agent import tools
+    uid = tools.get_or_create_user(conn, ext)
+    return sorted(r[0] for r in conn.execute("SELECT label FROM user_locations WHERE user_id = %s", (uid,)))
+
+
+def test_add_place_that_says_where_is_saved_there(conn, fake_llm):  # noqa: F811
+    """Live, 2026-10-20: read as add_place with label "ร้าน", it asked for a GPS share of "ร้าน" and saved nothing."""
+    risk.compute_all(conn, NOW)
+    msg = "ร้านส้มตำอยู่อำเภอเมืองเชียงราย"
+    fake_llm[msg] = {"intent": "add_place",
+                     "place": {"label": "ร้าน", "province": "เชียงราย", "amphoe": "เมืองเชียงราย"}}
+    r = chat.handle(conn, "U-add1", "web", text=msg)
+    assert "กดแชร์ตำแหน่ง" not in r.text and "อ.เมืองเชียงราย" in r.text
+    assert _place_labels(conn, "U-add1") == ["ร้านส้มตำ"]
+
+
+def test_set_home_that_says_where_is_saved_there(conn, fake_llm):  # noqa: F811
+    msg = "บ้านอยู่บางบาล อยุธยา"
+    fake_llm[msg] = {"intent": "set_home", "place": {"label": "บ้าน", "province": "พระนครศรีอยุธยา", "amphoe": "บางบาล"}}
+    r = chat.handle(conn, "U-add2", "web", text=msg)
+    assert "กดแชร์ตำแหน่ง" not in r.text and _place_labels(conn, "U-add2") == ["บ้าน"]
+
+
+def test_add_place_without_where_keeps_the_typed_name(conn, fake_llm):  # noqa: F811
+    msg = "อยากเพิ่มร้านส้มตำ"
+    fake_llm[msg] = {"intent": "add_place", "place": {"label": "ร้าน", "province": None}}
+    r = chat.handle(conn, "U-add3", "web", text=msg)
+    assert "\"ร้านส้มตำ\"" in r.text and "กดแชร์ตำแหน่ง" in r.text
