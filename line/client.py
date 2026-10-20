@@ -3,11 +3,18 @@ import base64
 import hashlib
 import hmac
 import os
+import re
 
 import httpx
 
 API = "https://api.line.me/v2/bot/message"
 MAX_TEXT = 5000
+USER_ID = re.compile(r"U[0-9a-f]{32}")
+
+
+def is_user_id(s: str | None) -> bool:
+    """A userId LINE will push to. Demo stand-ins ("demo:…") count as LINE accounts elsewhere, but LINE rejects them."""
+    return bool(s) and USER_ID.fullmatch(s) is not None
 
 
 def configured() -> bool:

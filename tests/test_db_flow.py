@@ -239,3 +239,21 @@ def test_only_a_greeting_gets_the_greeting(conn):
     other = chat.handle(conn, "U-g", "line", text="กินข้าวยัง")
     assert other.text.startswith("น้ำมายังไม่เข้าใจ") and "1784" in other.text
     assert "ยังหาตำแหน่งนี้ไม่เจอ" in chat.handle(conn, "U-g", "line", text="ปลอดภัยไหม").text
+
+
+def test_alert_pushes_only_to_real_line_ids(conn, monkeypatch):
+    # A demo stand-in counts as a LINE account for sign-in, but LINE rejects it as a push target ("to" invalid).
+    # It must get the alert in its chat history, like a web-only user, instead of failing every run.
+    monkeypatch.setenv("LINE_CHANNEL_SECRET", "s")
+    monkeypatch.setenv("LINE_CHANNEL_ACCESS_TOKEN", "t")
+    pushed = []
+    monkeypatch.setattr(alerts.line, "push", lambda to, msgs: pushed.append(to))
+    real = "U" + "0123456789abcdef" * 2
+    for ext in (real, "demo:responder"):
+        tools.save_location(conn, tools.get_or_create_user(conn, ext), "บ้าน", 14.41, 100.46)
+    _set_over_bank(conn, UP, 0.2)
+    assert len(alerts.run(conn, NOW + timedelta(minutes=3))) == 2
+    assert pushed == [real]
+    demo = tools.get_or_create_user(conn, "demo:responder")
+    assert conn.execute("SELECT count(*) FROM messages WHERE user_id = %s AND channel = 'alert'", (demo,)).fetchone()[0] == 1
+    assert alerts.run(conn, NOW + timedelta(minutes=4)) == []                # recorded, so no retry every run

@@ -85,8 +85,8 @@ def run(conn, now: datetime | None = None) -> list[dict]:
                                            {"patients": bool(hh.get("immobile")), "pets": bool(hh.get("pets"))})
             text = alert_text(loc["label"], st, mem, shelters)
             uid_ext = loc["line_user_id"]
-            # Anonymous web chats and Google-only accounts have no LINE id: the alert waits in their messages.
-            if tools.is_line_id(uid_ext) and line.configured():
+            # Anonymous web chats, Google-only and demo accounts have no real LINE id: the alert waits in their messages.
+            if line.is_user_id(uid_ext) and line.configured():
                 try:
                     line.push(uid_ext, [line.text_message(text)])
                 except Exception as e:
