@@ -155,6 +155,7 @@ def get_or_create_user(conn, external_id: str, display_name: str | None = None) 
 
 
 MEMORY_FIELDS = ("household", "house", "assets", "needs", "history", "preferences")
+PLACE_FIELDS = ("household", "house", "assets", "history")    # user_locations.facts: memory.FIELDS but needs
 
 
 def merge_users(conn, from_id: int, into_id: int) -> bool:
@@ -167,9 +168,14 @@ def merge_users(conn, from_id: int, into_id: int) -> bool:
     # Works with any row factory (the API uses dict rows, the agent tuple rows): reads go through _rows.
     for loc in _rows(conn, "SELECT id, label, lat, lon, notes FROM user_locations WHERE user_id = %s", (from_id,)):
         same = _rows(conn, "SELECT id FROM user_locations WHERE user_id = %s AND label = %s", (into_id, loc["label"]))
-        if same:
-            conn.execute("UPDATE user_locations SET lat = %s, lon = %s, notes = %s WHERE id = %s",
-                         (loc["lat"], loc["lon"], loc["notes"], same[0]["id"]))
+        if same:   # the place's facts join field by field, the anonymous chat's winning, as memory below
+            conn.execute("UPDATE user_locations m SET lat = %s, lon = %s, notes = %s, "
+                         "facts = (SELECT COALESCE(jsonb_object_agg(k, COALESCE(m.facts -> k, '{}') || v), '{}') "
+                         "         FROM jsonb_each(a.facts) AS e (k, v)) || (m.facts - ARRAY(SELECT jsonb_object_keys(a.facts))), "
+                         "pending = (SELECT COALESCE(jsonb_object_agg(k, COALESCE(m.pending -> k, '{}') || v), '{}') "
+                         "           FROM jsonb_each(a.pending) AS e (k, v)) || (m.pending - ARRAY(SELECT jsonb_object_keys(a.pending))) "
+                         "FROM user_locations a WHERE m.id = %s AND a.id = %s",
+                         (loc["lat"], loc["lon"], loc["notes"], same[0]["id"], loc["id"]))
             conn.execute("DELETE FROM user_locations WHERE id = %s", (loc["id"],))
         else:
             conn.execute("UPDATE user_locations SET user_id = %s WHERE id = %s", (into_id, loc["id"]))
@@ -216,10 +222,12 @@ def record_consent(conn, user_id: int, granted: bool, kind: str = "sensitive_mem
 def get_user_profile(conn, user_id: int) -> dict:
     mem = _rows(conn, "SELECT household, house, assets, needs, history, preferences FROM user_memory WHERE user_id = %s",
                 (user_id,))
-    locs = _rows(conn, "SELECT id, label, lat, lon, notes FROM user_locations WHERE user_id = %s ORDER BY id", (user_id,))
+    locs = _rows(conn, "SELECT id, label, lat, lon, notes, facts, pending FROM user_locations WHERE user_id = %s "
+                       "ORDER BY id", (user_id,))
     pending = _rows(conn, "SELECT facts FROM pending_facts WHERE user_id = %s", (user_id,))
-    return {"memory": mem[0] if mem else {}, "locations": locs,
-            "pending": pending[0]["facts"] if pending else {}, "consent": has_consent(conn, user_id)}
+    pending = pending[0]["facts"] if pending else {}
+    return {"memory": mem[0] if mem else {}, "locations": locs, "pending": pending,
+            "pending_any": bool(pending) or any(l["pending"] for l in locs), "consent": has_consent(conn, user_id)}
 
 
 def merge_memory(conn, user_id: int, facts: dict) -> None:
@@ -231,11 +239,39 @@ def merge_memory(conn, user_id: int, facts: dict) -> None:
                      (json.dumps(vals, ensure_ascii=False), user_id))
 
 
+def merge_place_facts(conn, location_id: int, facts: dict) -> None:
+    """facts: {field: {key: value}} into one saved place's facts. Shallow merge per field, as merge_memory."""
+    for field, vals in facts.items():
+        if field not in PLACE_FIELDS or not vals:
+            continue
+        conn.execute("UPDATE user_locations SET facts = jsonb_set(facts, ARRAY[%s::text], "
+                     "COALESCE(facts -> %s::text, '{}') || %s::jsonb) WHERE id = %s",
+                     (field, field, json.dumps(vals, ensure_ascii=False), location_id))
+
+
+def set_place_pending(conn, location_id: int, facts: dict) -> None:
+    """Add a place's facts waiting for consent, merged field by field as set_pending."""
+    for field, vals in facts.items():
+        if field in PLACE_FIELDS and vals:
+            conn.execute("UPDATE user_locations SET pending = jsonb_set(pending, ARRAY[%s::text], "
+                         "COALESCE(pending -> %s::text, '{}') || %s::jsonb) WHERE id = %s",
+                         (field, field, json.dumps(vals, ensure_ascii=False), location_id))
+
+
+def pop_place_pending(conn, user_id: int) -> list[dict]:
+    """[{id, label, facts}] for every place with facts waiting for consent, which are cleared."""
+    rows = _rows(conn, "SELECT id, label, pending FROM user_locations WHERE user_id = %s AND pending <> '{}' "
+                       "ORDER BY id", (user_id,))
+    conn.execute("UPDATE user_locations SET pending = '{}' WHERE user_id = %s AND pending <> '{}'", (user_id,))
+    return [{"id": r["id"], "label": r["label"], "facts": r["pending"]} for r in rows]
+
+
 def set_pending(conn, user_id: int, facts: dict) -> None:
     """Add facts waiting for consent, merged field by field so a second fact ("ใช้ออกซิเจน") keeps the first
-    ("กินยาประจำ"). An empty dict clears them."""
+    ("กินยาประจำ"). An empty dict clears them, the saved places' waiting facts too."""
     if not facts:
         conn.execute("DELETE FROM pending_facts WHERE user_id = %s", (user_id,))
+        conn.execute("UPDATE user_locations SET pending = '{}' WHERE user_id = %s", (user_id,))
         return
     row = conn.execute("SELECT facts FROM pending_facts WHERE user_id = %s", (user_id,)).fetchone()
     merged = dict(row[0]) if row else {}
@@ -251,8 +287,15 @@ def pop_pending(conn, user_id: int) -> dict:
     return row[0] if row else {}
 
 
-def forget(conn, user_id: int, what: str) -> None:
-    """what: 'all', a memory field name, or 'location:<id>'."""
+def forget(conn, user_id: int, what: str, where: str = "everywhere") -> None:
+    """what: 'all', a memory field name, or 'location:<id>'. For a field, where: 'everywhere' (the general facts and
+    every saved place's, as "ลบข้อมูลสุขภาพ" means), 'general' (only the general ones), or a place id as a string."""
+    if what in PLACE_FIELDS and where != "general":
+        place = "" if where == "everywhere" else " AND id = %s"
+        conn.execute(f"UPDATE user_locations SET facts = facts - %s::text, pending = pending - %s::text WHERE user_id = %s{place}",
+                     (what, what, user_id) + (() if where == "everywhere" else (int(where),)))
+        if where != "everywhere":
+            return
     if what == "all":
         conn.execute("UPDATE user_memory SET household='{}', house='{}', assets='{}', needs='{}', history='{}', "
                      "updated_at=now() WHERE user_id = %s", (user_id,))

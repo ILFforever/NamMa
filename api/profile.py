@@ -25,6 +25,7 @@ class PlaceRename(BaseModel):
 
 class NameRename(BaseModel):
     list: str = Field(max_length=20)            # one of memory.NAME_LISTS
+    place: int | None = None                    # a saved place's own facts (places[].facts), else the general ones
     from_: str = Field(alias="from", max_length=200)
     to: str = Field(max_length=60)
 
@@ -66,10 +67,16 @@ def _place(conn: psycopg.Connection, loc: dict) -> dict:
         where = _where(s["amphoe"], s["province"])
     return {
         "id": loc["id"], "label": loc["label"], "lat": loc["lat"], "lon": loc["lon"], "approx": approx, "where": where,
+        "facts": _facts(loc.get("facts") or {}, memory.is_home(loc["label"])),
         "nearest": {"station_id": s["station_id"], "code": s["code"], "name_th": s["name_th"],
                     "distance_km": s["distance_km"], "risk_tier": s["risk_tier"],
                     "diff_wl_bank": s["diff_wl_bank"], "observed_at": s["reading_ts"]} if s else None,
     }
+
+
+def _facts(mem: dict, home: bool = True) -> list[dict]:
+    return [{"kind": k, "text": line, "sensitive": k in memory.SENSITIVE, "list": lst, "names": names}
+            for k in FACT_KINDS for line, lst, names in memory.describe_items({k: mem.get(k) or {}}, home)]
 
 
 def _profile(conn: psycopg.Connection, uid: int | None, line_linked: bool) -> dict:
@@ -78,16 +85,14 @@ def _profile(conn: psycopg.Connection, uid: int | None, line_linked: bool) -> di
     if uid is None:
         return empty
     prof = tools.get_user_profile(conn, uid)
-    mem = prof["memory"] or {}
-    facts = [{"kind": k, "text": line, "sensitive": k in memory.SENSITIVE, "list": lst, "names": names}
-             for k in FACT_KINDS for line, lst, names in memory.describe_items({k: mem.get(k) or {}})]
+    facts = _facts(prof["memory"] or {})
     consent = conn.execute("SELECT granted, ts FROM consents WHERE user_id = %s AND kind = 'sensitive_memory' "
                            "ORDER BY ts DESC LIMIT 1", (uid,)).fetchone()
     return {
         "places": [_place(conn, loc) for loc in prof["locations"]],
         "facts": facts,
         "consent": {"granted": bool(consent and consent[0]), "ts": consent[1] if consent else None},
-        "pending_consent": bool(prof["pending"]),
+        "pending_consent": prof["pending_any"],
         "line_linked": line_linked,
     }
 
@@ -137,7 +142,11 @@ def rename_name(body: NameRename, user: dict | None = Depends(current_user), x_c
         raise ApiError(400, "bad_request", f"unknown list: {body.list}")
     to = _new_name(body.to)
     uid = _user_id(conn, user, x_chat_session)
-    row = conn.execute(f"SELECT {field} FROM user_memory WHERE user_id = %s", (uid,)).fetchone() if uid else None
+    if body.place is not None:
+        _own_place(conn, uid, body.place)
+        row = conn.execute("SELECT facts -> %s::text FROM user_locations WHERE id = %s", (field, body.place)).fetchone()
+    else:
+        row = conn.execute(f"SELECT {field} FROM user_memory WHERE user_id = %s", (uid,)).fetchone() if uid else None
     names = list(((row[0] if row else None) or {}).get(body.list) or [])
     if body.from_ not in names:
         raise ApiError(404, "not_found", f"{body.list} has no {body.from_}")
@@ -145,17 +154,39 @@ def rename_name(body: NameRename, user: dict | None = Depends(current_user), x_c
         if to in names:
             raise ApiError(409, "name_taken", f"{body.list} already has {to}")
         names[names.index(body.from_)] = to
-        tools.merge_memory(conn, uid, {field: {body.list: names}})
+        if body.place is not None:
+            tools.merge_place_facts(conn, body.place, {field: {body.list: names}})
+        else:
+            tools.merge_memory(conn, uid, {field: {body.list: names}})
     return envelope(conn, _profile(conn, uid, line_linked=bool(user and tools.is_line_id(user["line_user_id"]))))
 
 
 @router.delete("/api/profile/facts/{kind}")
 def delete_facts(kind: str, user: dict | None = Depends(current_user), x_chat_session: str | None = Header(None),
                  conn: psycopg.Connection = Depends(get_db)):
-    """kind: one of FACT_KINDS, or 'all' (every fact, place and fact waiting for consent)."""
+    """kind: one of FACT_KINDS (the general facts of that kind; a place's own are deleted on that place), or 'all'
+    (every fact, place and fact waiting for consent)."""
     if kind not in (*FACT_KINDS, "all"):
         raise ApiError(400, "bad_request", f"unknown kind: {kind}")
     uid = _user_id(conn, user, x_chat_session)
     if uid is not None:
-        tools.forget(conn, uid, kind)
+        tools.forget(conn, uid, kind, where="general")
     return envelope(conn, _profile(conn, uid, line_linked=bool(user and tools.is_line_id(user["line_user_id"]))))
+
+
+@router.delete("/api/profile/places/{place_id}/facts/{kind}")
+def delete_place_facts(place_id: int, kind: str, user: dict | None = Depends(current_user),
+                       x_chat_session: str | None = Header(None), conn: psycopg.Connection = Depends(get_db)):
+    """One saved place's own facts of one kind (places[].facts): "ร้านส้มตำ"'s dog, not the general household."""
+    if kind not in tools.PLACE_FIELDS:
+        raise ApiError(400, "bad_request", f"unknown kind: {kind}")
+    uid = _user_id(conn, user, x_chat_session)
+    _own_place(conn, uid, place_id)
+    tools.forget(conn, uid, kind, where=str(place_id))
+    return envelope(conn, _profile(conn, uid, line_linked=bool(user and tools.is_line_id(user["line_user_id"]))))
+
+
+def _own_place(conn: psycopg.Connection, uid: int | None, place_id: int) -> None:
+    if uid is None or not conn.execute("SELECT 1 FROM user_locations WHERE id = %s AND user_id = %s",
+                                       (place_id, uid)).fetchone():
+        raise ApiError(404, "not_found", f"place {place_id} not found")

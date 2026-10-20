@@ -268,18 +268,24 @@ Who: the signed-in account (LINE or Google), else the anonymous chat from the **
 {
   "places": [ { "id": 3, "label": "บ้านแม่", "lat": 14.37, "lon": 100.47, "approx": true,
                 "where": "อ.บางบาล จ.พระนครศรีอยุธยา",
+                "facts": [ { "kind": "household", "text": "สัตว์เลี้ยง: หมา", "sensitive": true,
+                             "list": "pets", "names": ["หมา"] } ],
                 "nearest": { "station_id": 2608, "code": "C.37", "name_th": "บ้านบางบาล", "distance_km": 1.3,
                              "risk_tier": "warning", "diff_wl_bank": -0.06, "observed_at": "…" } } ],
   "facts": [ { "kind": "household", "text": "ผู้ที่เดินไม่ได้/ติดเตียง: ยาย", "sensitive": true,
                "list": "immobile", "names": ["ยาย"] },
              { "kind": "house", "text": "บ้าน 2 ชั้น", "sensitive": false, "list": null, "names": [] } ],
   "consent": { "granted": true, "ts": "…" },   // latest sensitive_memory decision; ts null = never asked
-  "pending_consent": false,                     // a sensitive fact waits for consent (not shown, not saved)
+  "pending_consent": false,                     // a sensitive fact waits for consent, general or at a place (not shown, not saved)
   "line_linked": false                          // the account has a LINE id (gets LINE alerts)
 }
 ```
 - `approx`: the place was geocoded from its name, not a GPS share. `nearest` is null when no fresh station is within 60 km.
-- `facts[].kind` is one of `household`, `needs` (sensitive), `house`, `assets`, `history`.
+- `facts` are general: said without naming a place, they hold at every place. `places[].facts` hold at that place only
+  ("ร้านส้มตำมีหมา" → the shop's dog), same shape. A place's facts never include `needs`: medical needs stay with
+  the person. Chat answers, shelter ranking and alerts for a place use its facts plus the general ones.
+- `facts[].kind` is one of `household`, `needs` (sensitive), `house`, `assets`, `history`. A place that isn't a home
+  says "2 ชั้น", not "บ้าน 2 ชั้น".
 - `facts[].list`: the names the person gave that the line shows, which can be renamed: `immobile` (who can't walk),
   `pets`, `past_floods` (one line each). `null` for checklist facts (มีรถยนต์, บ้าน 2 ชั้น), which have no name.
 
@@ -291,11 +297,17 @@ Body `{ "label": "บ้านคุณแม่" }` (≤ 40 chars, spaces trimm
 label is empty, 409 `label_taken` if another of their places already has it (chat and LINE alerts name places by label).
 
 ### `PATCH /api/profile/names` → `Profile`
-Body `{ "list": "immobile", "from": "ยาย", "to": "ยายสมศรี" }` (`to` ≤ 60 chars, spaces trimmed). 400 for an
-unknown list or an empty name, 404 if `from` isn't in that list, 409 `name_taken` if `to` already is.
+Body `{ "list": "immobile", "from": "ยาย", "to": "ยายสมศรี", "place"?: 3 }` (`to` ≤ 60 chars, spaces trimmed).
+`place`: rename in that place's `facts`, else in the general ones. 400 for an unknown list or an empty name, 404 if
+`from` isn't in that list or the place isn't this person's, 409 `name_taken` if `to` already is.
 
 ### `DELETE /api/profile/facts/{kind}` → `Profile`
-`kind`: a fact kind, or `all` (every fact and place, and any fact waiting for consent).
+`kind`: a fact kind (the **general** facts of that kind; a place's own stay), or `all` (every fact and place, and
+any fact waiting for consent).
+
+### `DELETE /api/profile/places/{id}/facts/{kind}` → `Profile`
+That place's own facts of one kind (`household`, `house`, `assets`, `history`; 400 otherwise, `needs` included).
+404 if the place isn't this person's.
 
 ## Auth
 
@@ -312,7 +324,7 @@ Body: `{ id_token, chat_session? }`.
 - **LINE:** a LIFF ID token, verified with `POST https://api.line.me/oauth2/v2.1/verify` (`client_id` = `LINE_LOGIN_CHANNEL_ID`). `sub` is the LINE userId.
 - **Google:** a Google Sign-In ID token, verified with `https://oauth2.googleapis.com/tokeninfo`; `aud` must be `GOOGLE_CLIENT_ID` and the email verified. `sub` is the Google id.
 - The first sign-in creates the account. A Google-created account has no LINE id until LINE is linked, so it gets no LINE pushes (alerts wait in its messages).
-- **`chat_session`** is the anonymous web chat's `session_id`. Its places, memory, consents, pending facts and messages join the account and the anonymous chat is deleted (`merged_chat: true`). A place label both have keeps the anonymous chat's (newer) coordinates.
+- **`chat_session`** is the anonymous web chat's `session_id`. Its places, memory, consents, pending facts and messages join the account and the anonymous chat is deleted (`merged_chat: true`). A place label both have keeps the anonymous chat's (newer) coordinates, and its facts join field by field.
 - **Demo (`DEMO_MODE=1`):** `demo:user`, `demo:user:<name>` (LINE, one account per name) and `demo:google:<name>` (Google). `<name>` is `[a-z0-9_-]{1,40}`.
 - There are no staff accounts or roles (the responder role went with rescue tickets, 2026-10-19).
 

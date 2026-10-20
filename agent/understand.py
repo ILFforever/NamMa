@@ -61,8 +61,10 @@ Facts (omit what is not stated; {} if nothing):
  "house": {"stories": int, "raised": true, "near_water": true},
  "assets": {"car": true, "motorbike": true, "ground_floor_shop": true},
  "history": {"past_floods": [short Thai text]}}
-Only what is literally stated about the person's own household: not negations, other households, hypotheticals
-("ถ้า…") or questions. "my mother is 80" is not a health condition.
+Only what is literally stated about the person's own household, or about a saved place the message names (then set
+"saved": "ร้านส้มตำมีหมา" is the dog at the saved ร้านส้มตำ, "บ้านแม่มียายติดเตียง" grandma at the saved บ้านแม่).
+Not negations, other households that are not saved places, hypotheticals ("ถ้า…") or questions. "my mother is 80"
+is not a health condition.
 
 reply (intent other only): 1-3 short sentences in the language of the message, calm and practical. No numbers
 except the hotlines 1784 (DDPM), 1669 (medical), 191 (police), 199 (fire). Never say anyone is safe, never advise

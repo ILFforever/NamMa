@@ -157,7 +157,8 @@ rain_readings(station_id, ts, rain_1h, rain_24h, PRIMARY KEY(station_id, ts))
 station_risk(station_id PK, computed_at, level, trend_cm_per_hr, hours_to_bank, risk_tier, forecast_json)
 
 users(id PK, line_user_id UNIQUE, display_name, language DEFAULT 'th', created_at)
-user_locations(id PK, user_id, label, lat, lon, notes)          -- "บ้าน", "บ้านแม่ บางระกำ"
+user_locations(id PK, user_id, label, lat, lon, notes,          -- "บ้าน", "บ้านแม่ บางระกำ"
+               facts JSONB, pending JSONB)                      -- facts about this place only (§7)
 user_memory(user_id PK, household JSONB, house JSONB, assets JSONB, needs JSONB,
             history JSONB, preferences JSONB, updated_at)
 consents(user_id, kind, granted BOOLEAN, ts)                     -- kind: 'sensitive_memory', 'alerts'
@@ -207,6 +208,8 @@ What to remember (structured fields in `user_memory`, not free text):
 - **Needs:** medication, dialysis, oxygen or other power-dependent devices. ⚠ sensitive
 - **History:** past flooding at this place ("2011 น้ำท่วม 1 เมตร")
 - **Preferences:** language, alert hours, verbosity
+
+**Places have their own facts:** a fact about a saved place the message names ("ร้านส้มตำมีหมา", "บ้านแม่อยู่บางบาล ยายติดเตียง") goes to `user_locations.facts` (sensitive ones wait in its `pending`). Said without a place, it is general (`user_memory`) and holds at every place. **Needs** always stay with the person. Answers, shelters and alerts for a place read `memory.view()`: the general facts plus that place's.
 
 **Extraction:** after each user message, a second LLM call returns JSON of *newly stated durable facts* or `{}`. Store only stated facts; never infer.
 
