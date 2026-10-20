@@ -4,6 +4,7 @@ The endpoints are public but undocumented; see CLAUDE.md §4 for what we verifie
 Fetchers return raw JSON. parse_* functions turn it into plain dicts and are pure,
 so they're tested against trimmed real responses in tests/fixtures.
 """
+import threading
 import time
 from datetime import date, datetime, timedelta
 from zoneinfo import ZoneInfo
@@ -17,15 +18,17 @@ MIN_INTERVAL_S = 1.0          # be polite: at most one request per second
 MAX_HISTORY_DAYS = 366        # longer ranges are silently truncated by the API
 
 _last_call = 0.0
+_lock = threading.Lock()     # backfills fetch from several threads; the interval is shared
 
 
 def _get(path: str, params: dict | None = None, attempts: int = 3) -> dict:
     global _last_call
     for i in range(attempts):
-        wait = MIN_INTERVAL_S - (time.monotonic() - _last_call)
-        if wait > 0:
-            time.sleep(wait)
-        _last_call = time.monotonic()
+        with _lock:
+            wait = MIN_INTERVAL_S - (time.monotonic() - _last_call)
+            if wait > 0:
+                time.sleep(wait)
+            _last_call = time.monotonic()
         try:
             r = httpx.get(f"{BASE}/{path}", params=params, timeout=60,
                           headers={"User-Agent": "NamMa flood assistant (hackathon)"})

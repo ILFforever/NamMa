@@ -223,7 +223,7 @@ Rules first; the ML forecast is an add-on.
 
 ## 9. Forecast model (stretch goal, gated on data)
 
-**Go/no-go (day 2):** history endpoint returns ≥ 2–3 years for the demo-basin stations → GO. Otherwise ship rules only and call ML "future work". **Decision (2026-10-17): GO.** 2018–2026 backfilled for the corridor. `python -m model.forecast train` beats persistence at every horizon for all 7 modelled stations on Sept–Oct 2026 held out (C.35 +12 h: 5.5 cm vs 14.3 cm). Report: `model/artifacts/report.json`. Rule backtest (`model.backtest`): warning 4–27 h before each over-bank onset.
+**Go/no-go (day 2):** history endpoint returns ≥ 2–3 years for the demo-basin stations → GO. Otherwise ship rules only and call ML "future work". **Decision (2026-10-17): GO.** 2018–2026 backfilled for the corridor. `python -m model.forecast train` beats persistence at every horizon for all 7 modelled stations on Sept–Oct 2026 held out (C.35 +12 h: 5.5 cm vs 14.3 cm). Report: `model/artifacts/report.json`. Rule backtest (`model.backtest`): warning 4–27 h before each over-bank onset. **Expanded (2026-10-20):** `model.auto_edges` builds station_edges for the whole country (same-river neighbours; direction from height, confirmed by lagged rise correlation on 2025): 176 auto edges added to the 7 hand-built ones. Backfilled 2018–2026 for those stations (`ingest.backfill --edges`); 159 stations in 50 provinces now have a forecast (+12 h median 8.0 cm vs persistence 14.2 cm). Review: `model/artifacts/auto_edges.csv`.
 
 - Target: station level at +6h / +12h / +24h / +48h.
 - Features: own lagged levels and trend, upstream levels with lags based on `station_edges` travel times, upstream rain sums (**only from our own logging; no rain history exists, see 4.3**, so likely drop rain from training), discharge below the Chao Phraya Dam (C.13).
@@ -301,7 +301,7 @@ References (verify links before relying on them):
 - [x] ~~FunctionGraph runtime / cold start~~: moot, we run on ECS (§3)
 - [ ] LINE OA plan push-message quota (Thailand)
 - [ ] Does the $200 credit cover all services or only MaaS?
-- [x] Demo script §15 Bang Rakam: works. Answers use the nearest of all ~800 live stations (Y.64/Y.16 on the Yom), and `get_nearest_stations` fetches 2 days of history on demand so the trend is real. Only upstream edges and the ML forecast are corridor-only.
+- [x] Demo script §15 Bang Rakam: works. Answers use the nearest of all ~800 live stations (Y.64/Y.16 on the Yom), and `get_nearest_stations` fetches 2 days of history on demand so the trend is real. Upstream edges and the ML forecast now cover 159 stations in 50 provinces (see §9).
 - [ ] **Web hosting.** In AP-Bangkok, OBS's default domain adds `Content-Disposition: attachment`, so pages download instead of rendering. We need a custom domain + HTTPS (LIFF and geolocation need HTTPS too). Recommendation: serve namma-web's `dist` from the ECS FastAPI app on the same origin as `/api` (one cert, no CORS); keep OBS+CDN as a later upgrade.
 - [ ] **Web login.** Recommendation: LIFF on a LINE Login channel under the **same provider** as the OA channel, so the userId matches. The backend verifies the ID token. `initSession()` in namma-web `src/auth/session.ts` is the hook point. Publish the channel or add judges as Testers before the demo.
 - [x] ~~Responder access + audit~~: moot, rescue tickets and the responder role were removed (2026-10-19).
