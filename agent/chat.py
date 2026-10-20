@@ -371,11 +371,18 @@ def _route_understood(conn, uid: int, t: str, u: understand.Understanding | None
         return Reply(HELP, [LOCATION_Q, EXAMPLE_Q])
     if i == "thanks":
         return Reply(THANKS, [LOCATION_Q])
+    # "ร้านส้มตำอยู่อำเภอเมืองเชียงราย" read as add_place: it already says where, so save it there, not ask for a GPS
+    # share. The LLM's intents are only for asking without a place.
+    says_where = bool(find_place(t) or (u.place and u.place.amphoe))
+    if i in ("set_home", "add_place") and says_where:
+        return _talk(conn, uid, t)
     if i == "set_home":
         return _start_edit(conn, uid, SET_HOME)
     if i == "add_place":
-        if u.label and _place_name_ok(u.label):
-            return _got_place_name(conn, uid, u.label)
+        # The name as typed ("เพิ่มร้านส้มตำ"), not the LLM's shortened "ร้าน"
+        name = memory.location_label(t) or (m.group(1) if (m := ADD_NAMED_RE.search(t)) else None) or u.label
+        if name and _place_name_ok(name):
+            return _got_place_name(conn, uid, name)
         return _start_edit(conn, uid, ADD_PLACE)
     if i == "other" and (text := understand.safe_reply(u.reply)):
         return Reply(text + "\n\nถ้าอยู่ในอันตรายตอนนี้ โทร 1784 (ปภ.) ได้ทันที", [LOCATION_Q, EXAMPLE_Q])
