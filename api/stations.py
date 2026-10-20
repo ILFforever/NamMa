@@ -12,12 +12,12 @@ from api.common import ApiError, envelope, get_db
 router = APIRouter()
 
 SUMMARY_KEYS = ("id", "oldcode", "name_th", "name_en", "lat", "lon", "river", "province", "amphoe",
-                "agency", "is_key_station", "stem_order", "role")
+                "agency", "is_key_station", "stem_order", "role", "same_place_as")
 
 # One row per station: newest reading (LATERAL, not N+1) and its risk row. Bank levels are for detail only.
 _STATION_SQL = """
 SELECT s.id, s.oldcode, s.name_th, s.name_en, s.lat, s.lon, s.river, s.province, s.amphoe, s.agency,
-       s.is_key_station, s.stem_order, s.role, s.basin, s.river_key, s.river_order,
+       s.is_key_station, s.stem_order, s.role, s.basin, s.river_key, s.river_order, s.same_place_as,
        s.left_bank, s.right_bank, s.min_bank, s.ground_level, s.critical_level_msl,
        l.ts AS latest_ts, l.level_msl AS latest_level_msl, l.diff_wl_bank AS latest_diff_wl_bank,
        l.situation_level AS latest_situation_level, l.discharge AS latest_discharge,
@@ -33,9 +33,10 @@ LEFT JOIN LATERAL (
 LEFT JOIN station_risk r ON r.station_id = s.id
 """
 
-# Demo corridor: CSV-loaded stations. Until any station has a stem_order, stations with a risk row stand in.
-_CORRIDOR = """(s.stem_order IS NOT NULL OR s.role IS NOT NULL
-    OR (r.station_id IS NOT NULL AND NOT EXISTS (SELECT 1 FROM stations c WHERE c.stem_order IS NOT NULL)))"""
+# The whole network the map shows: every station that has reported in the last 3 days or has a risk row (~800),
+# plus the demo corridor's CSV stations even when they are quiet. Long-dead stations stay off the map.
+_LISTED = """(l.ts > now() - interval '3 days' OR r.station_id IS NOT NULL
+    OR s.stem_order IS NOT NULL OR s.role IS NOT NULL)"""
 
 
 def _station_rows(conn: psycopg.Connection, where: str, params=()) -> list[dict]:
@@ -57,7 +58,7 @@ def _summary(r: dict) -> dict:
 
 @router.get("/api/stations")
 def list_stations(conn: psycopg.Connection = Depends(get_db)):
-    rows = _station_rows(conn, _CORRIDOR)
+    rows = _station_rows(conn, _LISTED)
     return envelope(conn, [_summary(r) for r in rows])
 
 

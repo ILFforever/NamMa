@@ -27,7 +27,9 @@ Switch the web app to the real backend with `VITE_API_MODE=http` (the dev server
 ## Stations
 
 ### `GET /api/stations` → `StationSummary[]`
-All stations the map shows (today: the demo corridor in `data/corridor_stations.csv`).
+All stations the map shows: every station that reported in the last 3 days or has a `station_risk` row (~800,
+all agencies), plus the demo corridor in `data/corridor_stations.csv`. Corridor stations (by `stem_order`) come
+first, then the rest by id. ~350 KB of JSON, ~50 KB gzipped (Caddy compresses).
 
 ```jsonc
 {
@@ -37,6 +39,8 @@ All stations the map shows (today: the demo corridor in `data/corridor_stations.
   "agency": "RID", "is_key_station": true,
   "stem_order": 10,            // from corridor_stations.csv; null off the main stem
   "role": "main",              // main | branch | tributary | null  (CSV column, not in DB yet)
+  "same_place_as": null,       // id of the gauge this one duplicates (another agency at the same spot, from
+                               // ingest.rivers); the map draws and counts only that one
   "latest": {                  // null if no reading
     "ts": "2026-10-16T13:00:00+07:00", "level_msl": 4.69,
     "diff_wl_bank": 0.34,      // SIGNED: + above bank, - below

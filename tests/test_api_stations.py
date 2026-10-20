@@ -4,7 +4,7 @@ from datetime import datetime, timedelta, timezone
 from common import seed
 
 STATION_SUMMARY_KEYS = {"id", "oldcode", "name_th", "name_en", "lat", "lon", "river", "province", "amphoe",
-                        "agency", "is_key_station", "stem_order", "role", "latest", "risk"}
+                        "agency", "is_key_station", "stem_order", "role", "same_place_as", "latest", "risk"}
 DETAIL_KEYS = STATION_SUMMARY_KEYS | {"left_bank", "right_bank", "min_bank", "ground_level",
                                       "critical_level_msl", "upstream", "downstream"}
 SHELTER_KEYS = {"id", "name", "lat", "lon", "capacity", "accepts_patients", "accepts_pets", "phone", "distance_km",
@@ -96,13 +96,29 @@ def test_ingested_at_is_newest_risk_row_with_offset(api):
     assert meta["ingested_at"].endswith("+07:00")
 
 
-def test_list_falls_back_to_risk_rows_when_no_corridor_is_loaded(api):
+def test_list_covers_every_reporting_station_not_just_the_corridor(api):
     client, conn = api
-    _station(conn, 10)
-    _station(conn, 11)                     # no risk row: left out
-    _risk(conn, 10, "watch", datetime.now(timezone.utc))
-    ids = [s["id"] for s in client.get("/api/stations").json()["data"]]
-    assert ids == [10]
+    _station(conn, 1, stem_order=1, role="main")
+    _station(conn, 10)                     # off the corridor, reported an hour ago
+    _station(conn, 11)                     # off the corridor, a risk row but no reading kept
+    _station(conn, 12)                     # last reported 5 days ago: off the map
+    _station(conn, 13)                     # never reported
+    _reading(conn, 10, _hour(1), 2.0, -1.5)
+    _reading(conn, 12, _hour(120), 2.0, -1.5)
+    _risk(conn, 11, "watch", datetime.now(timezone.utc))
+    data = client.get("/api/stations").json()["data"]
+    assert [s["id"] for s in data] == [1, 10, 11]          # corridor (stem_order) first, then by id
+    assert data[1]["stem_order"] is None and data[1]["role"] is None
+
+
+def test_list_marks_a_gauge_that_duplicates_another(api):
+    client, conn = api
+    _station(conn, 1, stem_order=1, role="main")
+    _station(conn, 2, lat=14.0001)                 # another agency's gauge 10 m away
+    _reading(conn, 2, _hour(1), 2.0, -1.5)
+    conn.execute("UPDATE stations SET same_place_as = 1 WHERE id = 2")
+    data = {s["id"]: s for s in client.get("/api/stations").json()["data"]}
+    assert data[1]["same_place_as"] is None and data[2]["same_place_as"] == 1
 
 
 def test_empty_database_lists_nothing(api):
