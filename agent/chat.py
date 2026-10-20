@@ -187,6 +187,8 @@ AWAIT_TTL = 15 * 60                      # a half-finished "add a place" is forg
 HOME = "บ้าน"
 # What the LLM read in this turn's message (agent/understand.py), or None: the rules decide alone.
 _U: ContextVar[understand.Understanding | None] = ContextVar("understanding", default=None)
+# This turn's typed message, for the direct answer that opens a risk reply ("" for a location share).
+_Q: ContextVar[str] = ContextVar("question", default="")
 
 
 def handle(conn, external_id: str | None, channel: str, text: str | None = None,
@@ -204,7 +206,11 @@ def handle(conn, external_id: str | None, channel: str, text: str | None = None,
         tools.log_message(conn, uid, channel, "user", text)
     elif location:
         tools.log_message(conn, uid, channel, "user", f"[ตำแหน่ง {location[0]:.5f},{location[1]:.5f}]")
-    reply = _route(conn, uid, text or "", location)
+    token = _Q.set(text or "")
+    try:
+        reply = _route(conn, uid, text or "", location)
+    finally:
+        _Q.reset(token)
     if channel == "web":
         reply = web_reply(reply)
     tools.log_message(conn, uid, channel, "assistant", reply.text)
@@ -513,7 +519,8 @@ def _assess(conn, uid: int, lat: float, lon: float, label: str, approx: bool,
     shelters = tools.find_shelters(conn, lat, lon, {"patients": bool(hh.get("immobile")), "pets": bool(hh.get("pets"))})
     extent = tools.check_flood_extent(conn, lat, lon)
     recurrence = tools.get_flood_recurrence(conn, lat, lon)
-    text, swaps = answer.risk_answer(label, approx, stations, shelters, mem, extent, recurrence, extra)
+    text, swaps = answer.risk_answer(label, approx, stations, shelters, mem, extent, recurrence, extra,
+                                     question="" if saved else _Q.get())   # saving a place asked no question
     return text, _sources(stations, shelters, extent, recurrence, approx, bool(hh.get("immobile"))), swaps
 
 

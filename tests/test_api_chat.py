@@ -76,7 +76,7 @@ def test_question_about_a_station_returns_reply_sources_and_quick_replies(seeded
     # The web draws HotlineNotice under answers with a station source: no text copy, no emoji (LINE keeps both).
     # The station reading and the shelter are cards, so the text has the verdict instead of the station lines.
     assert "1784" not in d["reply"] and not chat._EMOJI.search(d["reply"])
-    assert "สถานีทดสอบ น้ำ" in d["reply"] and "T.1" not in d["reply"] and "ศูนย์ทดสอบ" not in d["reply"]
+    assert "• สถานีทดสอบ: น้ำ" in d["reply"] and "T.1" not in d["reply"] and "ศูนย์ทดสอบ" not in d["reply"]
     assert "สิ่งที่ควรทำตอนนี้\n• " in d["reply"]
     station = next(s for s in d["sources"] if s["type"] == "station")
     assert station["station_id"] == STATION and station["code"] == "T.1" and station["name_th"] == "สถานีทดสอบ"

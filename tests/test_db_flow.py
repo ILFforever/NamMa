@@ -271,7 +271,7 @@ def test_station_page_message_pins_alerts_to_that_station(conn):
     assert chat.handle(conn, "U-st", "line", text="แจ้งเตือนสถานี #123").text.startswith("ไม่พบสถานี")
 
     r = chat.handle(conn, "U-st", "line", text=f"แจ้งเตือนสถานี T.1 #{DOWN}")
-    assert r.text.startswith("📍 สถานี T.1") and "บันทึก \"สถานี T.1\" ไว้แล้ว" in r.text and "1784" in r.text
+    assert "\n\n📍 สถานี T.1" in r.text and "บันทึก \"สถานี T.1\" ไว้แล้ว" in r.text and "1784" in r.text
     assert r.place["saved_label"] == "สถานี T.1" and r.sources[0]["station_id"] == DOWN
     uid = tools.get_or_create_user(conn, "U-st")
     assert [(l["label"], l["station_id"]) for l in tools.get_user_profile(conn, uid)["locations"]] == [("สถานี T.1", DOWN)]
