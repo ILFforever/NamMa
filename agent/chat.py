@@ -221,7 +221,7 @@ def web_reply(reply: Reply) -> Reply:
     elif any(s["type"] in ("station", "shelter") for s in reply.sources):
         text = text.replace("\n\n" + answer.FOOTER, "")
     text = "\n".join(_EMOJI.sub("", ln).strip() for ln in text.split("\n"))
-    return Reply(text, reply.quick, reply.sources, reply.emergency)
+    return Reply(text, reply.quick, reply.sources, reply.emergency, place=reply.place)
 
 
 def _route(conn, uid: int, text: str, location) -> Reply:
@@ -771,7 +771,8 @@ def _shelters(conn, uid: int, t: str) -> Reply:
         text += "\n\n" + CONSENT_PROMPT
         quick = _consent_quick()
     sources = [_shelter_source(sh, need_patients) for sh in shelters]
-    return Reply(text, quick, sources=sources, web_swaps=swaps)
+    return Reply(text, quick, sources=sources, web_swaps=swaps,
+                 place={"label": label, "lat": lat, "lon": lon, "approx": approx, "saved_label": None})
 
 
 def _on_location(conn, uid: int, location) -> Reply:

@@ -68,6 +68,13 @@ def _quick_out(q: chat.QuickReply) -> dict:
     return {"type": "message", "label": label, "text": q.text or label}
 
 
+def _place_out(place: dict | None) -> dict | None:
+    """The point the answer is about, so the web can open the flood map there."""
+    if not place:
+        return None
+    return {"label": place["label"], "lat": place["lat"], "lon": place["lon"], "approx": bool(place["approx"])}
+
+
 @router.post("/api/chat")
 def chat_turn(body: ChatIn, user: dict | None = Depends(current_user), conn: psycopg.Connection = Depends(get_db)):
     given = [x for x in (body.message, body.postback, body.location) if x is not None]
@@ -105,4 +112,5 @@ def chat_turn(body: ChatIn, user: dict | None = Depends(current_user), conn: psy
         "sources": reply.sources,
         "quick_replies": [_quick_out(q) for q in reply.quick],
         "emergency": reply.emergency,
+        "place": _place_out(reply.place),
     })
