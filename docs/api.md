@@ -219,9 +219,13 @@ Request: `{ session_id, message? | postback? | location?: { lat, lon } }`. Exact
   "quick_replies": [ { "type": "message", "label": "มียายติดเตียง", "text": "ที่บ้านมียายติดเตียง" },
                      { "type": "postback", "label": "อนุญาต", "data": "consent:sensitive_memory:yes", "display_text": "อนุญาต" },
                      { "type": "location", "label": "ส่งตำแหน่ง" } ],
-  "emergency": false      // true → UI shows the DDPM 1784 card above the reply
+  "emergency": false,     // true → UI shows the DDPM 1784 card above the reply
+  "place": { "label": "บ้านแม่ อ.บางบาล จ.พระนครศรีอยุธยา", "lat": 14.369, "lon": 100.474, "approx": true }
 }
 ```
+
+- **`place`** is the point the answer is about (risk and shelter answers), else null. `approx` is true when it was
+  found from a place name (a district centre), false for a GPS share. The web links it to the flood map.
 
 - **Station sources carry the reading** the web StationCard draws, so the card shows exactly the numbers the reply used:
   `{ type: "station", station_id, code, name_th, distance_km, observed_at, river, agency, amphoe, province,

@@ -69,7 +69,10 @@ def test_question_about_a_station_returns_reply_sources_and_quick_replies(seeded
     body = r.json()
     assert "ingested_at" in body["meta"]
     d = body["data"]
-    assert set(d) == {"reply", "sources", "quick_replies", "emergency"}
+    assert set(d) == {"reply", "sources", "quick_replies", "emergency", "place"}
+    # The point the answer is about, so the web can open the flood map there; a name gives a district centre.
+    assert "บางบาล" in d["place"]["label"] and d["place"]["approx"] is True
+    assert set(d["place"]) == {"label", "lat", "lon", "approx"}
     # The web draws HotlineNotice under answers with a station source: no text copy, no emoji (LINE keeps both).
     # The station reading and the shelter are cards, so the text has the verdict instead of the station lines.
     assert "1784" not in d["reply"] and not chat._EMOJI.search(d["reply"])
@@ -100,6 +103,8 @@ def test_location_message_returns_nearest_station(seeded):
     d = r.json()["data"]
     assert [s["code"] for s in d["sources"] if s["type"] == "station"] == ["T.1"]
     assert "สถานีทดสอบ" in d["reply"]
+    assert d["place"]["lat"] == pytest.approx(14.41) and d["place"]["lon"] == pytest.approx(100.46)
+    assert d["place"]["approx"] is False
 
 
 def test_prefixed_duplicate_station_shows_once_with_plain_code_and_river(seeded):
@@ -207,12 +212,13 @@ def test_shelter_question_lists_shelters_near_the_named_place(seeded):
     assert [s["type"] for s in d["sources"]] == ["shelter"] and d["sources"][0]["name"] == "ศูนย์ทดสอบ"
     assert d["sources"][0]["distance_km"] is not None and "is_open" in d["sources"][0]
     assert d["emergency"] is False
+    assert "บางบาล" in d["place"]["label"]
 
 
 def test_shelter_question_without_a_place_asks_for_one(seeded):
     client, _ = seeded
     d = _chat(client, {"session_id": str(uuid.uuid4()), "message": "หาศูนย์พักพิง"}).json()["data"]
-    assert d["sources"] == [] and "แชร์ตำแหน่ง" in d["reply"]
+    assert d["sources"] == [] and "แชร์ตำแหน่ง" in d["reply"] and d["place"] is None
     assert any(q["type"] == "location" for q in d["quick_replies"])
 
 
