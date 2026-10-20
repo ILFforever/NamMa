@@ -202,7 +202,7 @@ if it has no numbers but hotlines and never says "safe".
 
 What to remember (structured fields in `user_memory`, not free text):
 - **Places** → `user_locations`
-- **Household:** elderly, bedridden, children, pregnant, pets. ⚠ sensitive
+- **Household:** elderly, bedridden, children, pregnant ⚠ sensitive; pets (same field, not sensitive: kept without consent)
 - **House:** stories, raised ground floor, near canal
 - **Assets:** car, motorbike, ground-floor shop
 - **Needs:** medication, dialysis, oxygen or other power-dependent devices. ⚠ sensitive

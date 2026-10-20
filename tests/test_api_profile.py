@@ -135,15 +135,13 @@ def test_a_place_has_its_own_facts(seeded):
     client, _ = seeded
     sid = str(uuid.uuid4())
     _chat(client, {"session_id": sid, "message": "ร้านอยู่บางบาล อยุธยา น้ำจะถึงไหม"})
-    _chat(client, {"session_id": sid, "message": "ร้านมีหมา"})
-    d = _profile(client, sid).json()["data"]
-    assert d["pending_consent"] is True and d["places"][0]["facts"] == []     # waits for consent, at the place
-    _chat(client, {"session_id": sid, "postback": "consent:sensitive_memory:yes"})
+    _chat(client, {"session_id": sid, "message": "ร้านมีหมา"})                 # a pet: kept without consent
     _chat(client, {"session_id": sid, "message": "มีรถยนต์"})                  # general
     d = _profile(client, sid).json()["data"]
+    assert d["pending_consent"] is False
     [shop] = d["places"]
     [pets] = shop["facts"]
-    assert pets == {"kind": "household", "text": "สัตว์เลี้ยง: หมา", "sensitive": True, "list": "pets", "names": ["หมา"]}
+    assert pets == {"kind": "household", "text": "สัตว์เลี้ยง: หมา", "sensitive": False, "list": "pets", "names": ["หมา"]}
     assert [f["text"] for f in d["facts"]] == ["มีรถยนต์"]
 
     body = {"list": "pets", "from": "หมา", "to": "หมาโบ้", "place": shop["id"]}

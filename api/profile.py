@@ -75,7 +75,7 @@ def _place(conn: psycopg.Connection, loc: dict) -> dict:
 
 
 def _facts(mem: dict, home: bool = True) -> list[dict]:
-    return [{"kind": k, "text": line, "sensitive": k in memory.SENSITIVE, "list": lst, "names": names}
+    return [{"kind": k, "text": line, "sensitive": memory.is_sensitive(k, lst), "list": lst, "names": names}
             for k in FACT_KINDS for line, lst, names in memory.describe_items({k: mem.get(k) or {}}, home)]
 
 

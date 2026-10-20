@@ -8,6 +8,8 @@ import re
 from agent import llm
 
 SENSITIVE = {"household", "needs"}
+# In a sensitive field but neither health nor vulnerability data: kept without asking for consent ("มีหมา").
+NOT_SENSITIVE = {("household", "pets")}
 FIELDS = ("household", "house", "assets", "needs", "history")
 # Kept for the person wherever they are, never for one place (a dialysis need goes with them).
 PERSON_ONLY = {"needs"}
@@ -122,8 +124,20 @@ def extract(text: str) -> dict:
 
 
 def split_sensitive(facts: dict) -> tuple[dict, dict]:
-    return ({k: v for k, v in facts.items() if k not in SENSITIVE},
-            {k: v for k, v in facts.items() if k in SENSITIVE})
+    """(kept without consent, waits for consent). Pets sit in household but are not health data."""
+    plain, sensitive = {}, {}
+    for k, v in facts.items():
+        if k not in SENSITIVE:
+            plain[k] = v
+            continue
+        for key, val in v.items():
+            (plain if (k, key) in NOT_SENSITIVE else sensitive).setdefault(k, {})[key] = val
+    return plain, sensitive
+
+
+def is_sensitive(field: str, key: str | None) -> bool:
+    """One profile line's fact: field, and its name list or key ("pets")."""
+    return field in SENSITIVE and (field, key) not in NOT_SENSITIVE
 
 
 def split_place(facts: dict) -> tuple[dict, dict]:
