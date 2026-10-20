@@ -11,7 +11,7 @@ from psycopg.rows import dict_row
 
 from agent import answer, memory, tools
 from agent.risk import TIER_TH, rank
-from line import client as line
+from line import cards, client as line
 
 DANGER_COOLDOWN = timedelta(hours=6)
 NEAR_KM = 15
@@ -59,6 +59,17 @@ def alert_text(label: str, station: dict, mem: dict, shelters: list[dict]) -> st
     return "\n".join(lines) + "\n\n" + answer.FOOTER
 
 
+def _push(line_user_id: str, text: str, tier: str) -> None:
+    """The alert as a Flex card in the tier's colour; plain text if the card can't be built or LINE rejects it."""
+    try:
+        if card := cards.alert_messages(text, tier):
+            line.push(line_user_id, card)
+            return
+    except Exception as e:
+        print(f"LINE alert card failed, sending text: {e!r}", flush=True)
+    line.push(line_user_id, [line.text_message(text)])
+
+
 def run(conn, now: datetime | None = None) -> list[dict]:
     now = now or datetime.now().astimezone()
     with conn.cursor(row_factory=dict_row) as cur:
@@ -99,7 +110,7 @@ def run(conn, now: datetime | None = None) -> list[dict]:
             # Anonymous web chats, Google-only and demo accounts have no real LINE id: the alert waits in their messages.
             if line.is_user_id(uid_ext) and line.configured():
                 try:
-                    line.push(uid_ext, [line.text_message(text)])
+                    _push(uid_ext, text, st["risk_tier"])
                 except Exception as e:
                     print(f"push failed for location {loc['id']}: {e!r}", flush=True)
                     continue

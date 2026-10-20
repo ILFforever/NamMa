@@ -33,9 +33,10 @@ def test_pin_then_card():
     assert len(card["altText"] if "altText" in card else msgs[1]["altText"]) <= 400
 
 
-def test_extra_notes_become_a_text_message():
+def test_extra_notes_become_a_card_after_the_risk_card():
     msgs = cards.risk_messages(reply(extra=["👪 ที่บ้านมีผู้สูงอายุไหม?", "ขออนุญาตจำข้อมูล"]))
-    assert msgs[-1]["type"] == "text" and "ผู้สูงอายุ" in msgs[-1]["text"] and "ขออนุญาต" in msgs[-1]["text"]
+    dumped = json.dumps(msgs[-1], ensure_ascii=False)
+    assert msgs[-1]["type"] == "flex" and "ผู้สูงอายุ" in dumped and "ขออนุญาต" in dumped
 
 
 def test_no_station_or_place_means_plain_text():
@@ -88,3 +89,72 @@ def test_forecast_reaches_card_through_chat_sources():
         assert sources[0]["model"] == st["model"]
         dumped = json.dumps(cards.risk_messages(reply(sources=sources))[1], ensure_ascii=False)
         assert ("+12 ชม. ต่ำกว่าตลิ่ง 0.12 ม. (±8 ซม.)" in dumped) is shown
+
+
+# ---- Replies without a station: the same text as a Flex bubble. ----
+from agent import answer, chat  # noqa: E402
+
+
+def _texts(node) -> list[str]:
+    if isinstance(node, dict):
+        return ([node["text"]] if node.get("type") == "text" else []) + [t for v in node.values() for t in _texts(v)]
+    if isinstance(node, list):
+        return [t for v in node for t in _texts(v)]
+    return []
+
+
+def _uris(node) -> list[str]:
+    dumped = json.dumps(node, ensure_ascii=False)
+    return [u.split('"')[0] for u in dumped.split('"uri": "')[1:]]
+
+
+def test_text_reply_keeps_every_line_and_turns_the_footer_into_buttons():
+    text = "🏫 ศูนย์พักพิงใกล้ บางบาล:\n1. โรงเรียน ห่าง 1.2 กม.\n2. วัด ห่าง 3.4 กม.\n\n⚠️ โทร 1784 ก่อน\n\n" + answer.FOOTER
+    (msg,) = cards.text_messages(Reply(text))
+    bubble = msg["contents"]
+    assert msg["type"] == "flex" and msg["altText"] == "🏫 ศูนย์พักพิงใกล้ บางบาล:"
+    assert _texts(bubble["header"]) == ["🏫 ศูนย์พักพิงใกล้ บางบาล"]
+    body = " ".join(_texts(bubble["body"]))
+    for needle in ("โรงเรียน ห่าง 1.2 กม.", "วัด ห่าง 3.4 กม.", "⚠️ โทร 1784 ก่อน"):
+        assert needle in body
+    assert "tel:1784" in _uris(bubble["footer"]) and cards.LINE_URL in _uris(bubble["footer"])
+    assert answer.FOOTER not in json.dumps(bubble, ensure_ascii=False)
+
+
+def test_untitled_reply_gets_the_brand_band_and_no_footer_without_one():
+    (msg,) = cards.text_messages(Reply("รับทราบค่ะ บันทึกแล้ว"))
+    assert _texts(msg["contents"]["header"]) == [cards.BRAND] and "footer" not in msg["contents"]
+
+
+def test_emergency_puts_the_calls_first_in_red():
+    text = chat.RESCUE_HOTLINE + "\n\nน้ำมาไม่ได้ส่งเรื่องให้หน่วยกู้ภัยแทน\n" + chat.NO_ANSWER
+    bubble = cards.text_messages(Reply(text, emergency=True))[0]["contents"]
+    assert bubble["header"]["backgroundColor"] == cards.DANGER
+    assert _uris(bubble["body"])[:2] == ["tel:1784", "tel:1669"]
+    assert chat.NO_ANSWER in _texts(bubble["body"])
+
+
+def test_hotlines_are_one_tap_each():
+    uris = _uris(cards.text_messages(Reply(chat.HOTLINES)))
+    assert {"tel:1784", "tel:1669", "tel:191", "tel:199", cards.LINE_URL} <= set(uris)
+
+
+def test_too_long_or_empty_stays_plain_text():
+    assert cards.text_messages(Reply("ก" * (cards.MAX_CARD_TEXT + 1))) is None
+    assert cards.text_messages(Reply("   ")) is None
+
+
+def test_alert_band_takes_the_tier_colour():
+    (msg,) = cards.alert_messages("🟠 เตือนภัยน้ำ — บ้าน\n• ยกของขึ้นที่สูง\n\n" + answer.FOOTER, "warning")
+    assert msg["contents"]["header"]["backgroundColor"] == cards.TIER_COLOR["warning"]
+
+
+def test_every_canned_reply_builds_a_valid_card():
+    from line import webhook
+    for text in (chat.HELP, chat.NOT_UNDERSTOOD, chat.THANKS, chat.EVAC_TEXT, chat.ALERT_TEXT, chat.CONSENT_PROMPT,
+                 webhook.WELCOME + answer.FOOTER, webhook.FALLBACK):
+        (msg,) = cards.text_messages(Reply(text))
+        assert 0 < len(msg["altText"]) <= 400
+        assert all(t.strip() for t in _texts(msg["contents"]))      # LINE rejects empty text components
+        for ln in filter(str.strip, text.removesuffix(answer.FOOTER).split("\n")):
+            assert any(ln.strip().removeprefix("• ") in t for t in _texts(msg["contents"])), ln

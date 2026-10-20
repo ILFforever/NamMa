@@ -47,7 +47,7 @@ def _handle_event(ev: dict) -> None:
     print(f"LINE {ev['type']}/{msg.get('type', '-')} answered in {took:.1f}s", flush=True)
     text_only = [client.text_message(r.text, r.quick)]
     try:
-        rich = cards.risk_messages(r)
+        rich = cards.risk_messages(r) or cards.text_messages(r)
     except Exception as e:
         print(f"LINE card build failed: {e!r}", flush=True)
         rich = None

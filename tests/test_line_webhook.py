@@ -13,6 +13,7 @@ def sent(monkeypatch):
     monkeypatch.setattr(webhook, "connect", lambda: contextlib.nullcontext(None))
     monkeypatch.setattr(webhook.chat, "handle", lambda conn, src, ch, **kw: chat.Reply("คำตอบ"))
     monkeypatch.setattr(webhook.cards, "risk_messages", lambda r: None)
+    monkeypatch.setattr(webhook.cards, "text_messages", lambda r: None)
     monkeypatch.setattr(webhook.client, "push", lambda to, msgs: calls.append(("push", to, msgs[0]["text"])))
     return calls
 
