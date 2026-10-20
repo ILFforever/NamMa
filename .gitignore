@@ -9,5 +9,5 @@ dist/
 *.tsbuildinfo
 .DS_Store
 
-# Trained LightGBM models (~24 MB). Rebuild: python -m model.forecast train. push.sh ships them.
+# Trained LightGBM models (~550 MB for 159 stations). Rebuild: python -m model.forecast train. push.sh ships them.
 model/artifacts/*.txt
