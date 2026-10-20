@@ -100,5 +100,19 @@ def api_refresh():
 # The built web app (namma-web repo: npm run build) on the same origin as /api: one cert, no CORS.
 # Default: the namma-web checkout next to this repo.
 WEB_DIST = Path(os.environ.get("WEB_DIST", ROOT.parent / "namma-web" / "dist"))
+
+
+class WebFiles(StaticFiles):
+    """The pages are checked on every load (no-cache), so a deploy reaches everyone at once: without it browsers
+    kept an old index.html, and with it an old build (one without LINE login, or another LIFF id). Files under
+    assets/ have a content hash in their name and never change."""
+
+    def file_response(self, full_path, stat_result, scope, status_code=200):
+        res = super().file_response(full_path, stat_result, scope, status_code)
+        immutable = Path(full_path).parent.name == "assets"
+        res.headers["Cache-Control"] = "public, max-age=31536000, immutable" if immutable else "no-cache"
+        return res
+
+
 if WEB_DIST.is_dir():
-    app.mount("/", StaticFiles(directory=WEB_DIST, html=True), name="web")
+    app.mount("/", WebFiles(directory=WEB_DIST, html=True), name="web")
