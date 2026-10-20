@@ -1,7 +1,8 @@
 """The one always-warm app (CLAUDE.md §3): LINE webhook, web API, the built web app, scheduler.
 
     uvicorn api.main:app --port 8000        # SCHEDULER=1 also runs ingest → risk → alerts every 10 min,
-                                            # and the GISTDA flood layers every 3 h when GISTDA_API_KEY is set
+                                            # and, when GISTDA_API_KEY is set, the GISTDA flood layers every 3 h
+                                            # in a child process of their own
 """
 import os
 import threading
@@ -29,9 +30,10 @@ DEMO = os.environ.get("DEMO_MODE", "1") == "1"
 async def lifespan(_app):
     if os.environ.get("SCHEDULER") == "1":
         threading.Thread(target=jobs.loop, args=(int(os.environ.get("SCHEDULER_EVERY", "600")),), daemon=True).start()
-        # Its own thread: a full layer is a download of several minutes and must not hold up the water ingest.
+        # Its own low-priority process: a full layer is minutes of download and parsing, which must hold up
+        # neither the water ingest nor the site's requests.
         if os.environ.get("GISTDA_API_KEY"):
-            threading.Thread(target=gistda_flood.loop, args=(int(os.environ.get("GISTDA_EVERY", "10800")),),
+            threading.Thread(target=gistda_flood.supervise, args=(int(os.environ.get("GISTDA_EVERY", "10800")),),
                              daemon=True).start()
     yield
 

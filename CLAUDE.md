@@ -100,7 +100,9 @@ gateway answers 407; with a bad one 401 `INVALID_API_KEY` (checked 2026-10-19, a
   `GET https://api-gateway.gistda.or.th/api/2.0/resources/features/flood/{1day|3days|7days|30days}?limit=&offset=`
   (`bbox` and `pv_idn` filter; `skipGeometry`/`properties` are ignored, so geometry always comes back, ~3 KB a cell).
   Reported sizes: 3 days ~80k cells, 7 days ~110k (a few hundred MB). 1-day/3-day are sometimes empty.
-  Client + import: `ingest/gistda_flood.py` (3-day + 7-day, every 3 h in the scheduler, skips an unchanged layer).
+  Client + import: `ingest/gistda_flood.py` (3-day, 7-day + 30-day, every 3 h in the scheduler, skips an unchanged
+  layer). All cells of a layer share its scenes (`file_name`, ~36 for 30 days): there is no date per cell, so
+  "how lately" comes from the layers nesting (api/flood.py `seen`). 30 days ≈ 190k cells (~544 MB to parse).
   Map tiles also exist (`maps/flood/{period}/tms/{z}/{x}/{y}`, key needed, so they'd need a proxy): not used.
 - Flood recurrence 2011–2023 at a point ("has this spot flooded before, how often"):
   `https://api-gateway.gistda.or.th/api/2.0/resources/gi-service/v1.0/disasters/flood-recurrence?lat={lat}&lon={lon}`
@@ -108,8 +110,9 @@ gateway answers 407; with a bad one 401 `INVALID_API_KEY` (checked 2026-10-19, a
   `{"result": "not found"}`. Client: `agent/gistda.py`.
 
 **Not yet checked against a response of ours** (no key yet): the field names come from other projects' write-ups.
-The parsers look for each field under the reported names, and the first page of each new layer and every recurrence
-response are archived (key removed) under `var/raw/gistda`. Check them once a key is in `.env`.
+The parsers look for each field under the reported names. Every page of each stored flood layer is kept (key removed)
+under `var/raw/gistda/flood/<period>/<time>/` for `GISTDA_SNAPSHOT_KEEP_DAYS` (90), and its cells for good in
+`flood_cells_history`, one copy per period per day. Check the parser against them once a key is in `.env`.
 
 ### 4.5 No API (handle manually)
 - ~~Shelters: hand-curate a CSV~~ → now from DDPM, see §4.7.

@@ -12,7 +12,7 @@ import h3
 import httpx
 import pytest
 
-from agent import chat, gistda, risk, tools
+from agent import answer, chat, gistda, risk, tools
 from ingest import gistda_flood as gf
 
 BANG_BAN = (14.41, 100.46)
@@ -80,6 +80,7 @@ def test_parse_feature_reads_gistdas_real_shape():
     assert (c["province"], c["amphoe"], c["tambon"]) == ("ฉะเชิงเทรา", "เมืองฉะเชิงเทรา", "บางกระไห")
     assert (c["pv_code"], c["ap_code"], c["tb_code"]) == ("24", "2401", "240114")
     assert c["observed_at"] == datetime(2026, 10, 19, 6, 27, tzinfo=gf.BKK)                    # newest scene
+    assert c["scene_from"] == datetime(2026, 10, 17, 17, 10, tzinfo=gf.BKK)                    # oldest scene
     assert (c["buildings"], c["population"], c["schools"], c["hospitals"]) == (0, 169.55, 0, 0)
     [row], unit = gf.finish([c])
     assert row["area_km2"] == pytest.approx(0.00126, abs=1e-5) and unit == "cell"              # ~1% of the cell
@@ -178,6 +179,10 @@ def test_fingerprint_ignores_timestamp_and_links(small_pages):
 
 # --- storing, API, chat (Postgres) -------------------------------------------------------------------
 
+def _snapshots(tmp_path, period="3days"):
+    return sorted((tmp_path / "gistda" / "flood" / period).iterdir())
+
+
 def _store_layer(conn, monkeypatch, tmp_path, pages, period="3days", total=None):
     monkeypatch.setattr(gf, "RAW_DIR", tmp_path)
     client, seen = _gistda(pages, total=total if total is not None else sum(len(p) for p in pages.values()))
@@ -192,13 +197,22 @@ def test_run_once_stores_the_layer_and_skips_an_unchanged_one(api, monkeypatch, 
     assert conn.execute("SELECT count(*), count(DISTINCT h3_r7) FROM flood_cells WHERE period = '3days'").fetchone()[0] == 7
     unit, by_prov = conn.execute("SELECT area_unit, by_province FROM flood_fetches").fetchone()
     assert unit == "m2" and list(by_prov) == ["พระนครศรีอยุธยา"]
-    [raw] = (tmp_path / "gistda").glob("flood_3days_*.json.gz")
-    text = gzip.open(raw, "rt", encoding="utf-8").read()
-    assert KEY not in text and "links" not in json.loads(text)
+    [snap] = _snapshots(tmp_path)
+    assert snap.suffix == "" and sorted(p.name for p in snap.iterdir()) == [
+        "0000000.json.gz", "0000003.json.gz", "0000006.json.gz"]
+    for page in snap.iterdir():
+        text = gzip.open(page, "rt", encoding="utf-8").read()
+        assert KEY not in text and "links" not in json.loads(text)
+    today = datetime.now(gf.BKK).date()
+    assert summary["day"] == today
+    assert conn.execute("SELECT day, count(*) FROM flood_cells_history GROUP BY day").fetchall() == [(today, 7)]
+    assert conn.execute("SELECT jsonb_typeof(props), props->>'pop_affected' FROM flood_cells "
+                        "ORDER BY props->>'pop_affected' DESC LIMIT 1").fetchone() == ("object", "72")
 
     again, seen = _store_layer(conn, monkeypatch, tmp_path, small_pages)
     assert again is None and len(seen) == 1                        # only the first page was asked for
     assert conn.execute("SELECT count(*) FROM flood_fetches").fetchone()[0] == 1
+    assert len(_snapshots(tmp_path)) == 1
 
 
 def test_a_failed_download_keeps_the_stored_layer(api, monkeypatch, tmp_path, small_pages):
@@ -208,6 +222,55 @@ def test_a_failed_download_keeps_the_stored_layer(api, monkeypatch, tmp_path, sm
     with pytest.raises(gf.GistdaError):
         _store_layer(conn, monkeypatch, tmp_path, changed, total=99)
     assert conn.execute("SELECT count(*) FROM flood_cells").fetchone()[0] == 7
+    assert conn.execute("SELECT count(*) FROM flood_cells_history").fetchone()[0] == 7
+    assert [d.suffix for d in _snapshots(tmp_path)] == [""]                           # no partial snapshot left
+
+
+def test_history_keeps_one_copy_per_day(api, monkeypatch, tmp_path, small_pages):
+    _, conn = api
+    _store_layer(conn, monkeypatch, tmp_path, small_pages)
+    conn.execute("UPDATE flood_cells_history SET day = day - 1")                       # make it yesterday's copy
+    _store_layer(conn, monkeypatch, tmp_path, {0: _layer(3, at=(14.6, 100.5))})
+    today = datetime.now(gf.BKK).date()
+    by_day = "SELECT day, count(*) FROM flood_cells_history GROUP BY day ORDER BY day"
+    assert conn.execute(by_day).fetchall() == [(today - timedelta(days=1), 7), (today, 3)]
+    _store_layer(conn, monkeypatch, tmp_path, small_pages)                             # a later layer the same day
+    assert conn.execute(by_day).fetchall() == [(today - timedelta(days=1), 7), (today, 7)]
+    assert len(_snapshots(tmp_path)) == 3                                              # every stored layer's pages
+
+
+def test_old_and_partial_snapshots_are_dropped(api, monkeypatch, tmp_path, small_pages):
+    _, conn = api
+    root = tmp_path / "gistda" / "flood" / "3days"
+    (root / "20200101_000000_000000").mkdir(parents=True)                             # past GISTDA_SNAPSHOT_KEEP_DAYS
+    (root / "20991231_000000_000000.partial").mkdir()                                  # a run stopped part-way
+    _store_layer(conn, monkeypatch, tmp_path, small_pages)
+    [snap] = _snapshots(tmp_path)
+    assert snap.name not in ("20200101_000000_000000", "20991231_000000_000000") and snap.suffix == ""
+
+
+def test_supervise_runs_the_loop_in_a_low_priority_process(monkeypatch):
+    started = []
+
+    class Stop(Exception):
+        pass
+
+    class FakeProcess:
+        def __init__(self, cmd, cwd):
+            started.append(cmd)
+
+        def wait(self):
+            return 1                                                                   # the fetcher died
+
+    def sleep(_seconds):
+        raise Stop
+
+    monkeypatch.setattr(gf.subprocess, "Popen", FakeProcess)
+    monkeypatch.setattr(gf.time, "sleep", sleep)
+    with pytest.raises(Stop):
+        gf.supervise(10800)
+    [cmd] = started
+    assert cmd[:3] == ["nice", "-n", "10"] and cmd[4:] == ["-m", "ingest.gistda_flood", "--every", "10800"]
 
 
 def test_flood_areas(api, monkeypatch, tmp_path, small_pages):
@@ -246,7 +309,7 @@ def test_flood_cells_in_view(api, monkeypatch, tmp_path, small_pages):
     d = client.get("/api/flood/cells", params=view).json()["data"]
     assert d["res"] == 9 and d["truncated"] is False and len(d["cells"]) == 7
     c = d["cells"][0]
-    assert set(c) == {"h3", "cells", "area_km2", "share", "province", "amphoe", "tambon", "observed_at",
+    assert set(c) == {"h3", "cells", "area_km2", "share", "seen", "province", "amphoe", "tambon", "observed_at",
                       "buildings", "population", "schools", "hospitals"}
     assert c["schools"] is None and c["hospitals"] is None                             # not sent: unknown, not 0
     assert c["share"] == 1.0 and h3.is_valid_cell(c["h3"]) and c["amphoe"] == "บางบาล"   # largest first
@@ -254,7 +317,7 @@ def test_flood_cells_in_view(api, monkeypatch, tmp_path, small_pages):
     parent = client.get("/api/flood/cells", params={**view, "res": 7}).json()["data"]["cells"]
     assert sum(p["cells"] for p in parent) == 7 and all(h3.get_resolution(p["h3"]) == 7 for p in parent)
     assert sum(p["area_km2"] for p in parent) == pytest.approx(sum(x["area_km2"] for x in d["cells"]), abs=1e-3)
-    assert set(parent[0]) == {"h3", "cells", "area_km2", "share"} and 0 < parent[0]["share"] < 1
+    assert set(parent[0]) == {"h3", "cells", "area_km2", "share", "seen"} and 0 < parent[0]["share"] < 1
 
     capped = client.get("/api/flood/cells", params={**view, "limit": 2}).json()["data"]
     assert capped["truncated"] is True and len(capped["cells"]) == 2
@@ -324,3 +387,71 @@ def test_chat_answer_shows_the_satellite_line(api, monkeypatch, tmp_path, small_
     # Named place: a district centre, so the area around it, not a yes/no for the point.
     r = chat.handle(conn, "U-flood", "line", text="บ้านอยู่บางบาล อยุธยา น้ำจะถึงไหม")
     assert "พื้นที่น้ำท่วมในรัศมี 5 กม. รวมราว" in r.text
+
+
+def _season(conn, monkeypatch, tmp_path, month):
+    """A 30-day layer of `month`'s cells, a 7-day one of its first 3 and a 3-day one of its first."""
+    _store_layer(conn, monkeypatch, tmp_path, {0: month[:3], 3: month[3:6], 6: month[6:]}, period="30days")
+    _store_layer(conn, monkeypatch, tmp_path, {0: month[:3]}, period="7days")
+    _store_layer(conn, monkeypatch, tmp_path, {0: month[:1]}, period="3days")
+
+
+def test_flood_cells_say_how_lately_water_was_seen(api, monkeypatch, tmp_path, small_pages):
+    client, conn = api
+    month = _layer(7)
+    _season(conn, monkeypatch, tmp_path, month)
+    view = {"bbox": "100.40,14.35,100.52,14.47", "period": "30days"}
+    d = client.get("/api/flood/cells", params=view).json()["data"]
+    seen = {c["h3"]: c["seen"] for c in d["cells"]}
+    cells = [f["properties"]["h3"] for f in month]
+    assert seen[cells[0]] == "3days" and {seen[c] for c in cells[1:3]} == {"7days"}
+    assert {seen[c] for c in cells[3:]} == {"30days"}
+    assert [w["period"] for w in d["windows"]] == ["3days", "7days", "30days"]
+    assert all(w["fetched_at"] for w in d["windows"])
+    parents = client.get("/api/flood/cells", params={**view, "res": 7}).json()["data"]["cells"]
+    assert any(p["seen"] == "3days" for p in parents)                    # a parent is as fresh as its freshest cell
+    week = client.get("/api/flood/cells", params={**view, "period": "7days"}).json()["data"]
+    assert {c["seen"] for c in week["cells"]} == {"3days", "7days"} and len(week["windows"]) == 2
+
+
+def test_flood_tambon_story(api, monkeypatch, tmp_path, small_pages):
+    client, conn = api
+    assert client.get("/api/flood/tambon", params={"code": "140504"}).status_code == 404     # nothing known yet
+    for bad in ("1405", "abcdef", "1405041"):
+        assert client.get("/api/flood/tambon", params={"code": bad}).status_code == 400, bad
+    month = _layer(7)
+    _store_layer(conn, monkeypatch, tmp_path, {0: month[:3], 3: month[3:6], 6: month[6:]}, period="30days")
+    _store_layer(conn, monkeypatch, tmp_path, {0: month[:3]}, period="7days")
+    d = client.get("/api/flood/tambon", params={"code": "140504"}).json()["data"]
+    assert (d["province"], d["amphoe"], d["tambon"]) == ("พระนครศรีอยุธยา", "บางบาล", "บางหลวงโดด")
+    w = {x["period"]: x for x in d["windows"]}
+    assert w["3days"]["cells"] == 0 and w["3days"]["fetched_at"] is None                    # not downloaded yet
+    assert (w["7days"]["cells"], w["30days"]["cells"]) == (3, 7)
+    assert w["30days"]["area_rai"] > w["7days"]["area_rai"] and w["30days"]["buildings"] == 84
+    assert d["last_seen"] == "7days"
+    today = datetime.now(gf.BKK).date().isoformat()
+    assert [(r["day"], r["period"], r["cells"]) for r in d["record"]] == [(today, "30days", 7), (today, "7days", 3)]
+    assert d["history"] is None                                                         # province not copied yet
+
+    conn.execute("INSERT INTO flood_history_runs (pv_code, shapes, pages, raw_bytes, cells, tambons) "
+                 "VALUES ('14', 2, 1, 10, 2, 1)")
+    conn.execute("INSERT INTO flood_history_tambon (tb_code, pv_code, tambon, amphoe, province, years, freq, shapes, "
+                 "rai_by_year) VALUES ('140504', '14', 'บางหลวงโดด', 'บางบาล', 'พระนครศรีอยุธยา', %s, 2, 2, %s)",
+                 (0b1000001, '{"2011": 812.5, "2017": 90.0}'))
+    h = client.get("/api/flood/tambon", params={"code": "140504"}).json()["data"]["history"]
+    assert h["years"] == [2011, 2017] and h["years_covered"][0] == 2011 and h["rai_by_year"]["2011"] == 812.5
+    dry = client.get("/api/flood/tambon", params={"code": "140599"}).json()["data"]          # copied, never flooded
+    assert dry["history"]["years"] == [] and dry["last_seen"] is None and dry["tambon"] is None
+
+
+def test_chat_says_the_water_may_have_gone_down(api, monkeypatch, tmp_path, small_pages):
+    _, conn = api
+    _store_layer(conn, monkeypatch, tmp_path, {0: _layer(3, at=(13.0, 100.0))}, period="3days")   # water elsewhere
+    assert gistda.check_flood_extent(conn, *BANG_BAN)["earlier"] is None                          # no 30-day layer
+    _store_layer(conn, monkeypatch, tmp_path, small_pages, period="30days")
+    e = gistda.check_flood_extent(conn, *BANG_BAN)
+    assert e["days"] == 3 and e["nearest_km"] is None
+    assert e["earlier"]["days"] == 30 and e["earlier"]["nearest_km"] == pytest.approx(0, abs=0.2)
+    line = answer.flood_extent_text(e, approx=True)
+    assert "ในรอบ 30 วันเคยพบน้ำท่วม" in line and "น้ำอาจลดลงแล้ว" in line
+    assert gistda.check_flood_extent(conn, 13.0, 100.0)["earlier"] is None                       # water there now

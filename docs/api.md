@@ -106,14 +106,23 @@ One river, all its stations (`reason: "match"`, `distance_km: null`). 404 if unk
 
 ## Flood (GISTDA satellite)
 
-GISTDA's flooded H3 cells (res 9, ~0.1 km² each) from the latest **3-day** and **7-day** satellite layers, stored by
-`ingest/gistda_flood.py` (every 3 h when `GISTDA_API_KEY` is set). Credit GISTDA (สทอภ.) in the UI. Every number is
-a count or sum of GISTDA's cells: `area_km2` is GISTDA's flooded area in the cell (the whole cell when it gives none),
-`area_rai` = km² × 625, rounded. `period` is `3days` (default) or `7days`; anything else is 400.
+GISTDA's flooded H3 cells (res 9, ~0.1 km² each) from the latest **3-day**, **7-day** and **30-day** satellite layers,
+stored by `ingest/gistda_flood.py` (every 3 h when `GISTDA_API_KEY` is set). Credit GISTDA (สทอภ.) in the UI. Every
+number is a count or sum of GISTDA's cells: `area_km2` is GISTDA's flooded area in the cell (the whole cell when it
+gives none), `area_rai` = km² × 625, rounded. `period` is `3days` (default), `7days` or `30days`; anything else is 400.
 
-Both answers carry the layer: `{ period, fetched_at, observed_from, observed_to }`. `fetched_at` is when we downloaded
-it; `observed_*` is the range of dates GISTDA gives its cells. All three are **null before the first download**: show
-"no data yet", never "no flooding". A downloaded layer with no cells is a real "nothing detected".
+Every answer carries the layer: `{ period, fetched_at, observed_from, observed_to }`. `fetched_at` is when we
+downloaded it; `observed_*` is the span of GISTDA's satellite scenes in it (the 30-day layer: about a month). All three
+are **null before the first download**: show "no data yet", never "no flooding". A downloaded layer with no cells is a
+real "nothing detected".
+
+**How lately water was seen.** GISTDA sends no date per cell, only the scenes of the whole layer. But the layers nest,
+so a cell of the 30-day layer that is also in the 7-day one had water this week, and one also in the 3-day layer had
+it in the last 3 days. `seen` (on `/cells`) and `last_seen` (on `/tambon`) are that: the shortest layer holding it.
+A cell missing from the shorter layers may also simply have had no scene over it lately, so say "water last seen
+…", never "dried up". Each scene covers only a strip of the country, so a place gets a pass every 2–3 days and the
+3-day layer is sparse (1,570 cells against the 7-day layer's 88,972 on 2026-10-20): the web map shades "this week"
+(`3days` or `7days`) against "only 8–30 days ago" (`30days`), and shows the 3-day figure only in the tambon card.
 
 ### `GET /api/flood/areas?period=3days&level=province&province=&amphoe=&limit=100` → `FloodAreas`
 Flooded area per area, largest first, and the total over the same filter.
@@ -136,10 +145,14 @@ The flooded cells in the map's view, largest first. The web draws them with h3-j
   `buildings`, `population`, `schools`, `hospitals` (each `null` when not sent). `res` 5–8 sums them into parent
   cells for a zoomed-out map (`cells` = how many res-9 cells). `share` = flooded part of the cell, 0–1.
 - `limit` 1–20000; `truncated: true` when the view holds more. `bbox` is required; a bad box is 400.
+- `seen`: `3days | 7days | 30days`, the shortest layer that also holds the cell (for a parent, the freshest of its
+  cells); never longer than `period`. `windows`: the layer fields of `period` and every shorter layer, shortest
+  first, to label the map's legend with real dates.
 
 ```jsonc
-{ "period": "3days", "fetched_at": "…", "observed_from": "…", "observed_to": "…", "res": 7, "truncated": false,
-  "cells": [ { "h3": "8764a4770ffffff", "cells": 41, "area_km2": 4.9, "share": 0.93 } ] }
+{ "period": "30days", "fetched_at": "…", "observed_from": "…", "observed_to": "…", "res": 7, "truncated": false,
+  "cells": [ { "h3": "8764a4770ffffff", "cells": 41, "area_km2": 4.9, "share": 0.93, "seen": "7days" } ],
+  "windows": [ { "period": "3days", "fetched_at": "…", "observed_from": "…", "observed_to": "…" }, … ] }
 ```
 
 ### `GET /api/flood/near?lat=&lon=&period=3days` → `FloodNear`
@@ -169,6 +182,27 @@ lists its sub-districts. Codes are GISTDA's `pv_idn` / `tb_idn`, the same as the
 Sorted by the worst year's rai. An area missing from `areas` in a copied province never flooded in these years;
 in a province not in `provinces` it is not known yet.
 
+### `GET /api/flood/tambon?code=` → `FloodTambon`
+One sub-district's flood story for the area panel: this season, our own record, and 2011–. `code` is GISTDA's 6-digit
+`tb_idn` (the map outlines' `code`); not 6 digits is 400, a code no source knows is 404.
+- `windows`: one per layer, shortest first, with the layer fields and that layer's cells / area / `buildings` /
+  `population` in the sub-district (counts `null` = not sent). `last_seen`: the shortest layer with any cells there,
+  `null` when none of the stored layers has any.
+- `record`: our daily copy of the layers there (`flood_cells_history`), one row per day and period that had cells,
+  oldest first. It starts on the day we started keeping it, so it is short at first: never extrapolate it.
+- `history`: as `/api/flood/history` for this one sub-district; `years: []` = its province is copied and it never
+  flooded 2011–; `history: null` = its province is not copied yet.
+
+```jsonc
+{ "code": "140504", "province": "พระนครศรีอยุธยา", "amphoe": "บางบาล", "tambon": "บางหลวงโดด",
+  "windows": [ { "period": "3days", "fetched_at": "…", "observed_from": "…", "observed_to": "…",
+                 "cells": 0, "area_km2": 0, "area_rai": 0, "buildings": null, "population": null }, … ],
+  "last_seen": "7days",
+  "record": [ { "day": "2026-10-20", "period": "30days", "cells": 412, "area_km2": 31.2, "area_rai": 19500 } ],
+  "history": { "years_covered": [2011, …, 2024], "years": [2011, 2017], "rai_by_year": { "2011": 812.5 } },
+  "source": "GISTDA" }
+```
+
 ## Chat
 
 ### `POST /api/chat` → `ChatResponse`
@@ -195,7 +229,8 @@ Request: `{ session_id, message? | postback? | location?: { lat, lon } }`. Exact
   stations (null elsewhere). The reply text already says it; the LINE card shows it as a row.
 - **GISTDA sources** (`{ type: "gistda", kind, summary, observed_at }`) repeat the reply's satellite lines:
   - `flood_extent`, from the stored 3-day layer (7-day when the 3-day one is empty): at a GPS point, flooded or not and
-    the nearest flooded cell; around a place found by name (a district centre), the flooded area within 5 km.
+    the nearest flooded cell; around a place found by name (a district centre), the flooded area within 5 km. With
+    nothing within 5 km now but water there in the 30-day layer, it says so ("น้ำอาจลดลงแล้ว").
     `observed_at` is the layer's newest GISTDA date, else when it was downloaded.
   - `flood_recurrence`: the years the subdistrict flooded, 2011–2024, from our copy of GISTDA's flood history
     (`ingest/gistda_history.py`); at a GPS point also whether the point itself flooded. `observed_at` null.
@@ -287,4 +322,4 @@ real risk. Both need a signed-in session (demo login is enough) and answer 403 w
 
 - **`station_edges`** has only RID stations, and `approx_travel_hours` is NULL until estimated.
 - **GISTDA property names** are not documented. `ingest/gistda_flood.py` looks for each field under the names other
-  projects report and archives the first page of each new layer; check the parser against one once we have a key.
+  projects report and keeps every page of each stored layer (`var/raw/gistda/flood`); check the parser against one.

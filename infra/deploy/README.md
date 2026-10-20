@@ -44,8 +44,25 @@ turn on "Use webhook", turn off auto-reply messages. Click Verify.
 - `https://<EIP>.sslip.io/healthz` returns 200. It returns 503 if no risk refresh in 30 min, so point an uptime check at it.
 - Logs: `journalctl -u namma -f`
 - Web app: `https://<EIP>.sslip.io/#/chat`, station map `#/map`, satellite flood map `#/flood`
-- GISTDA: `journalctl -u namma | grep gistda` shows each layer's cells and area, or why it was skipped.
-  The first page of each new layer is kept under `var/raw/gistda` (key removed) to check the parser against.
+- GISTDA: `journalctl -u namma | grep gistda` shows each layer's cells and area, or why it was skipped. The fetch
+  runs as a low-priority child of the API (`ingest.gistda_flood --every`), so it restarts with the service.
+  Every stored layer is kept: all its pages under `var/raw/gistda/flood/<period>/<time>/` (key removed, ~50 MB a
+  7-day layer, dropped after `GISTDA_SNAPSHOT_KEEP_DAYS`, default 90) and its cells in `flood_cells_history`.
+
+### GISTDA record (copy plan phase 4): check after the deploy that adds it
+The first fetch after that deploy downloads the 30-day layer for the first time. Dry run on this VM (2026-10-20):
+187,778 cells in 188 pages, 13.3 min, peak 593 MB in the fetcher (the VM had ~860 MB available). On the VM, as root:
+1. The fetcher runs as its own process at nice 10, next to uvicorn:
+   `ps -o pid,ni,rss,etime,args -u namma | grep -E 'gistda_flood|uvicorn'`
+2. Every stored layer left a snapshot, and none is left half-written (a `*.partial` folder exists only during a fetch):
+   `ls /opt/namma/var/raw/gistda/flood/*/ && du -sh /opt/namma/var/raw/gistda/flood/*`
+3. One copy per period per day. **Phase 4 is done when this shows 7 days in a row for each period:**
+   `sudo -u postgres psql namma -c "SELECT day, period, count(*) AS cells, round(sum(area_km2)) AS km2 FROM flood_cells_history GROUP BY 1, 2 ORDER BY 1, 2"`
+4. The site stays fast during a 30-day download. Watch for one (`journalctl -u namma -f | grep gistda`; the line
+   `gistda 30days: … cells … in … s` ends it) and time the API during and outside it:
+   `for i in 1 2 3 4 5; do curl -s -o /dev/null -w '%{time_total}\n' 'http://127.0.0.1:8000/api/flood/areas?period=7days'; done`
+   The times during a fetch should stay close to the ones outside it. Also `free -m`: available memory should not
+   fall near zero, and `journalctl -k | grep -i oom` should stay empty.
 
 ## Moving to RDS later
 Create RDS for PostgreSQL in the same VPC, set `DATABASE_URL` in `/opt/namma/.env`, run

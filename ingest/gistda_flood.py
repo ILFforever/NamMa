@@ -1,11 +1,12 @@
 """GISTDA satellite flood extent → flood_cells. The only module that downloads GISTDA's flood layers.
 
-    python -m ingest.gistda_flood                  # both layers once (3-day, then 7-day)
+    python -m ingest.gistda_flood                  # every layer once (3-day, 7-day, then 30-day)
     python -m ingest.gistda_flood --period 3days
     python -m ingest.gistda_flood --force          # re-store both even if unchanged (after a parser fix)
-    python -m ingest.gistda_flood --every 10800    # loop; the API runs this itself when SCHEDULER=1 and a key is set
+    python -m ingest.gistda_flood --every 10800    # loop; the API starts this as its own low-priority process
+                                                   # when SCHEDULER=1 and a key is set (supervise below)
 
-GET https://api-gateway.gistda.or.th/api/2.0/resources/features/flood/{3days|7days}?limit=&offset=
+GET https://api-gateway.gistda.or.th/api/2.0/resources/features/flood/{3days|7days|30days}?limit=&offset=
 (OGC API Features, needs GISTDA_API_KEY). One GeoJSON feature per flooded H3 cell (res 9, ~0.1 km²).
 The old gi-service/v1.0/disasters/flood-extent-1day point query is dead. What we know about this one comes from
 other projects' write-ups (Oct 2026), not yet from a response of ours:
@@ -15,8 +16,11 @@ other projects' write-ups (Oct 2026), not yet from a response of ours:
   first page has not changed is not downloaded again.
 - The 1-day and 3-day layers are sometimes empty.
 - Property names are not documented. Each field is looked for under the names reported so far (the H3 index in any
-  property that holds one, else from the geometry), and the first page of every new layer is archived with the key
-  removed under var/raw/gistda, so the parser can be checked against a real response.
+  property that holds one, else from the geometry).
+Every stored layer is also kept (copy plan phase 4): all its pages, gzipped with the key removed, under
+var/raw/gistda/flood/<period>/<YYYYmmdd_HHMMSS_micros>/ for GISTDA_SNAPSHOT_KEEP_DAYS (default 90), so the parser
+can be checked against a real response and a layer re-read after a parser fix; and its cells in
+flood_cells_history, one copy per period per day, kept for good.
 """
 import argparse
 import gzip
@@ -24,19 +28,23 @@ import hashlib
 import json
 import os
 import re
+import shutil
+import subprocess
+import sys
 import time
 from collections import defaultdict
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 
 import h3
 import httpx
 from psycopg.types.json import Jsonb
 
-from common.config import RAW_DIR
+from common.config import RAW_DIR, ROOT
 from ingest.thaiwater import BKK
 
 BASE = "https://api-gateway.gistda.or.th/api/2.0/resources/features/flood"
-PERIODS = ("3days", "7days")
+PERIODS = ("3days", "7days", "30days")   # shortest first: api/flood.py reads "seen lately" from this order
 PAGE = 1000
 MIN_INTERVAL_S = 1.0
 MAX_CELLS = 400_000                     # far above any layer seen: past this, offset is being ignored
@@ -45,7 +53,8 @@ CELL_RES = 9                            # GISTDA's grid, used only when a featur
 PARENT_RES = (5, 6, 7, 8)
 RAI_PER_KM2 = 625
 TO_KM2 = {"km2": 1.0, "rai": 1 / RAI_PER_KM2, "m2": 1e-6}
-KEEP_RAW = 10                           # archived first pages per period
+SNAPSHOT_KEEP_DAYS = int(os.environ.get("GISTDA_SNAPSHOT_KEEP_DAYS", "90"))   # raw pages of stored layers
+SNAPSHOT_NAME = "%Y%m%d_%H%M%S_%f"              # sorts by time
 
 H3_KEYS = ("h3_address", "h3", "h3_index", "h3index", "h3_id", "h3id", "hex_id", "hexid", "cell_id", "grid_id", "index")
 # (property, unit). None = no unit in the name: read with area_unit() over the whole layer.
@@ -165,7 +174,8 @@ def parse_feature(f: dict) -> dict | None:
             used.add(k)
             break
 
-    out = {"h3": cell, "lat": lat, "lon": lon, "raw_area": raw_area, "area_unit": unit, "observed_at": None}
+    out = {"h3": cell, "lat": lat, "lon": lon, "raw_area": raw_area, "area_unit": unit, "observed_at": None,
+           "scene_from": None}
     for field, keys in NAME_KEYS.items():
         hit = _first(low, keys)
         out[field] = _name(hit[1]) if hit else None
@@ -187,8 +197,9 @@ def parse_feature(f: dict) -> dict | None:
         out["observed_at"] = _when(hit[1])
         used.add(hit[0])
     elif isinstance(low.get("file_name"), str) and (scenes := SCENE_DATE.findall(low["file_name"])):
-        d, t = max(scenes)                   # the newest scene the cell was seen in
-        out["observed_at"] = datetime.strptime(d + t, "%Y%m%d%H%M").replace(tzinfo=BKK)
+        when = [datetime.strptime(d + t, "%Y%m%d%H%M").replace(tzinfo=BKK) for d, t in scenes]
+        out["observed_at"] = max(when)       # the newest scene the cell was seen in
+        out["scene_from"] = min(when)        # the oldest: with it, a layer's dates span its whole window
         used.add("file_name")
     # Everything else as sent (impact counts, scenes), scalars only. URLs are dropped: links can carry the key.
     out["props"] = {k: v for k, v in (props or {}).items() if str(k).lower() not in used
@@ -222,13 +233,14 @@ def finish(cells: list[dict]) -> tuple[list[dict], str]:
             by_cell[c["h3"]] = c
     guessed = area_unit(list(by_cell.values()))
     rows = []
-    for c in by_cell.values():
+    for c in by_cell.values():               # in place: a 30-day layer is ~190k cells on a 1.7 GB VM
         full = h3.cell_area(c["h3"], "km^2")
         unit = c["area_unit"] or guessed
         area = c["raw_area"] * TO_KM2[unit] if c["raw_area"] is not None and unit in TO_KM2 else full
         res = h3.get_resolution(c["h3"])
-        parents = {f"h3_r{p}": h3.cell_to_parent(c["h3"], p) if p < res else c["h3"] for p in PARENT_RES}
-        rows.append({**c, **parents, "area_km2": min(area, full)})
+        c.update({f"h3_r{p}": h3.cell_to_parent(c["h3"], p) if p < res else c["h3"] for p in PARENT_RES})
+        c["area_km2"] = min(area, full)
+        rows.append(c)
     return rows, guessed
 
 
@@ -307,41 +319,66 @@ def fingerprint(first: dict) -> str:
     return hashlib.sha256(body.encode()).hexdigest()[:32]
 
 
-def archive(period: str, first: dict, key: str | None) -> None:
-    """Keep the first page of each new layer (no links, key removed) to check the parser against."""
-    d = RAW_DIR / "gistda"
-    d.mkdir(parents=True, exist_ok=True)
-    body = _scrub(json.dumps({k: v for k, v in first.items() if k != "links"}, ensure_ascii=False), key)
-    with gzip.open(d / f"flood_{period}_{datetime.now():%Y%m%d_%H%M%S}.json.gz", "wt", encoding="utf-8") as f:
+def snapshot_dir(period: str) -> Path:
+    return RAW_DIR / "gistda" / "flood" / period
+
+
+def save_page(d: Path, offset: int, page: dict, key: str | None) -> None:
+    """One page, gzipped, without `links` (they echo the request URL) and with the key removed."""
+    body = _scrub(json.dumps({k: v for k, v in page.items() if k != "links"}, ensure_ascii=False), key)
+    with gzip.open(d / f"{offset:07d}.json.gz", "wt", encoding="utf-8") as f:
         f.write(body)
-    for old in sorted(d.glob(f"flood_{period}_*.json.gz"))[:-KEEP_RAW]:
-        old.unlink(missing_ok=True)
+
+
+def prune_snapshots(period: str, now: datetime) -> None:
+    """Drop snapshots older than SNAPSHOT_KEEP_DAYS, and any left part-way by a run that was stopped."""
+    cutoff = (now - timedelta(days=SNAPSHOT_KEEP_DAYS)).strftime(SNAPSHOT_NAME)
+    for d in snapshot_dir(period).iterdir():
+        if d.is_dir() and (d.suffix == ".partial" or d.name < cutoff):
+            shutil.rmtree(d, ignore_errors=True)
 
 
 # --- storing -----------------------------------------------------------------------------------------
 
 COLS = ("period", "h3", "h3_r5", "h3_r6", "h3_r7", "h3_r8", "lat", "lon", "area_km2", "pv_code", "ap_code", "tb_code",
         "province", "amphoe", "tambon", "observed_at", "buildings", "population", "schools", "hospitals", "props")
+HISTORY_COLS = ("h3", "lat", "lon", "area_km2", "pv_code", "ap_code", "tb_code", "observed_at", "buildings",
+                "population", "schools", "hospitals")
 
 
 def store(conn, period: str, rows: list[dict], fp: str | None, unit: str) -> dict:
-    """Replace the period's cells with this layer and log the fetch. The caller commits."""
+    """Replace the period's cells with this layer, log the fetch, and make the layer today's copy in
+    flood_cells_history. The caller commits."""
     conn.execute("DELETE FROM flood_cells WHERE period = %s", (period,))
     with conn.cursor() as cur, cur.copy(f"COPY flood_cells ({', '.join(COLS)}) FROM STDIN") as copy:
-        for r in rows:
-            copy.write_row([period, *(r[c] for c in COLS[1:-1]), Jsonb(r["props"])])
+        for r in rows:                       # props may already be JSON text (run_once keeps them that way)
+            props = r["props"] if isinstance(r["props"], str) else Jsonb(r["props"])
+            copy.write_row([period, *(r[c] for c in COLS[1:-1]), props])
     by_province: dict[str, float] = defaultdict(float)
     for r in rows:
         by_province[r["province"] or r["pv_code"] or "?"] += r["area_km2"]
     seen = [r["observed_at"] for r in rows if r["observed_at"]]
+    since = [w for r in rows if (w := r.get("scene_from") or r["observed_at"])]
     summary = {"period": period, "cells": len(rows), "area_km2": round(sum(r["area_km2"] for r in rows), 4),
-               "observed_from": min(seen, default=None), "observed_to": max(seen, default=None)}
-    conn.execute("INSERT INTO flood_fetches (period, cells, area_km2, observed_from, observed_to, fingerprint, "
-                 "area_unit, by_province) VALUES (%(period)s, %(cells)s, %(area_km2)s, %(observed_from)s, "
-                 "%(observed_to)s, %(fp)s, %(unit)s, %(by_province)s)",
-                 {**summary, "fp": fp, "unit": unit,
-                  "by_province": Jsonb({k: round(v, 4) for k, v in sorted(by_province.items())})})
-    return summary
+               "observed_from": min(since, default=None), "observed_to": max(seen, default=None)}
+    fetch_id = conn.execute(
+        "INSERT INTO flood_fetches (period, cells, area_km2, observed_from, observed_to, fingerprint, "
+        "area_unit, by_province) VALUES (%(period)s, %(cells)s, %(area_km2)s, %(observed_from)s, "
+        "%(observed_to)s, %(fp)s, %(unit)s, %(by_province)s) RETURNING id",
+        {**summary, "fp": fp, "unit": unit,
+         "by_province": Jsonb({k: round(v, 4) for k, v in sorted(by_province.items())})}).fetchone()[0]
+    day = datetime.now(BKK).date()
+    cols = ", ".join(HISTORY_COLS)
+    conn.execute("DELETE FROM flood_cells_history WHERE day = %s AND period = %s", (day, period))
+    conn.execute(f"INSERT INTO flood_cells_history (day, period, fetch_id, {cols}) "
+                 f"SELECT %s, period, %s, {cols} FROM flood_cells WHERE period = %s", (day, fetch_id, period))
+    return {**summary, "day": day}
+
+
+def _lean(cell: dict) -> dict:
+    """GISTDA's other attributes as JSON text, not a dict: a third of the memory, for a layer of ~190k cells."""
+    cell["props"] = json.dumps(cell["props"], ensure_ascii=False, separators=(",", ":"), default=str)
+    return cell
 
 
 def run_once(conn, period: str, key: str | None = None, client: httpx.Client | None = None,
@@ -356,20 +393,32 @@ def run_once(conn, period: str, key: str | None = None, client: httpx.Client | N
     conn.rollback()                          # no transaction left open during a download of several minutes
     own = client is None
     client = client or _client(key)
+    snap = None
     try:
         first = fetch_page(client, period, 0)
         fp = fingerprint(first)
         if not force and last and last[0] == fp and datetime.now(timezone.utc) - last[1] < REFETCH_ANYWAY:
             return None
-        archive(period, first, key)
-        cells = [c for page in fetch_layer(client, period, first) for f in page["features"] if (c := parse_feature(f))]
+        now = datetime.now(BKK)
+        snapshot_dir(period).mkdir(parents=True, exist_ok=True)
+        prune_snapshots(period, now)
+        snap = snapshot_dir(period) / f"{now.strftime(SNAPSHOT_NAME)}.partial"
+        snap.mkdir()
+        cells, offset = [], 0
+        for page in fetch_layer(client, period, first):
+            save_page(snap, offset, page, key)
+            offset += len(page["features"])
+            cells += [_lean(c) for f in page["features"] if (c := parse_feature(f))]
+        rows, unit = finish(cells)
+        summary = store(conn, period, rows, fp, unit)
+        conn.commit()
+        snap = snap.rename(snap.with_suffix(""))     # whole and stored: only now a snapshot
+        return summary
     finally:
         if own:
             client.close()
-    rows, unit = finish(cells)
-    summary = store(conn, period, rows, fp, unit)
-    conn.commit()
-    return summary
+        if snap is not None and snap.suffix == ".partial":
+            shutil.rmtree(snap, ignore_errors=True)
 
 
 def run_all(periods=PERIODS, force: bool = False) -> None:
@@ -390,6 +439,17 @@ def loop(every: int, periods=PERIODS) -> None:
     while True:
         run_all(periods)
         time.sleep(every)
+
+
+def supervise(every: int) -> None:
+    """For the API (api/main.py): run `loop` in its own process at low priority and start it again if it ends. A
+    7-day layer is minutes of download and parsing, which in the API's own process slowed the site. The child
+    shares the API's systemd unit, so stopping or restarting the API stops it too."""
+    cmd = ["nice", "-n", "10", sys.executable, "-m", "ingest.gistda_flood", "--every", str(every)]
+    while True:
+        code = subprocess.Popen(cmd, cwd=ROOT).wait()
+        print(f"gistda fetcher exited with {code}, starting it again in 60 s", flush=True)
+        time.sleep(60)
 
 
 def main() -> None:
