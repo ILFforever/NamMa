@@ -3,6 +3,7 @@ sub-districts. Shapes are built to the plan's description of features/flood-freq
 pv/ap/tb names and codes); paging goes through httpx.MockTransport, so nothing calls GISTDA. DB tests skip
 without Postgres."""
 import gzip
+import threading
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -110,7 +111,7 @@ def test_download_pages_onto_disk_and_resumes(fast, tmp_path):
     d = tmp_path / "pv14"
     got = gh.download("14", d, KEY, client)
     assert got["pages"] == 3 and got["fetched"] == 3 and got["number_matched"] == 7
-    assert [int(r.url.params["offset"]) for r in seen] == [0, 3, 6]
+    assert sorted(int(r.url.params["offset"]) for r in seen) == [0, 3, 6]
     assert all(r.url.params["pv_idn"] == "14" and KEY not in str(r.url) for r in seen)
     text = "".join(gzip.open(p, "rt", encoding="utf-8").read() for p in sorted(d.glob("*.json.gz")))
     assert KEY not in text and '"links"' not in text
@@ -119,6 +120,24 @@ def test_download_pages_onto_disk_and_resumes(fast, tmp_path):
     client, seen = _gistda(fast, total=7)
     assert gh.download("14", d, KEY, client)["fetched"] == 1 and [r.url.params["offset"] for r in seen] == ["3"]
     assert gh.download("14", d, None)["fetched"] == 0         # everything on disk: no key, no client needed
+
+
+def test_download_fetches_pages_in_parallel(fast, tmp_path, monkeypatch):
+    monkeypatch.setattr(gh, "WORKERS", 3)
+    feats = _province(10)
+    pages = {0: feats[:3], 3: feats[3:6], 6: feats[6:9], 9: feats[9:]}
+    barrier = threading.Barrier(3, timeout=5)          # three page requests must be in flight together
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        offset = int(request.url.params["offset"])
+        if offset:
+            barrier.wait()
+        body = {"type": "FeatureCollection", "features": pages[offset], "numberMatched": 10}
+        return httpx.Response(200, json=body)
+
+    client = httpx.Client(transport=httpx.MockTransport(handler), headers={"API-Key": KEY})
+    got = gh.download("14", tmp_path / "pv14", KEY, client)
+    assert got["pages"] == 4 and got["fetched"] == 4 and got["number_matched"] == 10
 
 
 def test_download_waits_out_a_rate_limit(fast, tmp_path):

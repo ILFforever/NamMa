@@ -27,7 +27,9 @@ import json
 import os
 import re
 import shutil
+import threading
 import time
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 import h3
@@ -39,7 +41,8 @@ from ingest import gistda_flood as gf
 
 BASE = "https://api-gateway.gistda.or.th/api/2.0/resources/features/flood-freq"
 PAGE = 1000
-MIN_INTERVAL_S = 1.0                    # ~1 request a second
+WORKERS = int(os.environ.get("GISTDA_WORKERS", "4"))   # pages in flight at once
+MIN_INTERVAL_S = 0.5                   # least gap between two request starts, across all workers
 RATE_LIMIT_TRIES = 5                    # 429s in a row before giving up on a page
 RATE_LIMIT_WAIT_S = 60                  # when a 429 carries no Retry-After
 MAX_SHAPES = 1_500_000                  # far above any province measured: past this, offset is being ignored
@@ -225,53 +228,89 @@ def _check_filter(page: dict, pv: str) -> None:
 
 def download(pv: str, d: Path, key: str | None, client: httpx.Client | None = None) -> dict:
     """Every page of one province onto disk, skipping pages already there. Ends at numberMatched when the first page
-    gives one, else at a short page. Raises on a province that ends early, so a partial copy is never built."""
+    gives one, else at a short page. Pages after the first are fetched WORKERS at a time, request starts at least
+    MIN_INTERVAL_S apart. Raises on a province that ends early, so a partial copy is never built."""
     d.mkdir(parents=True, exist_ok=True)
     own = client is None
-    fetched, started = 0, time.monotonic()
+    started = time.monotonic()
+    lock = threading.Lock()
+    next_start = [0.0]                   # monotonic time the next request may start
+    fetched = [0]
+
+    def ensure_client() -> httpx.Client:
+        nonlocal client
+        with lock:
+            if client is None:
+                if not key:
+                    raise GistdaError("GISTDA_API_KEY is not set and pages are missing from " + str(d))
+                client = _client(key)
+            return client
+
+    def pace() -> None:
+        with lock:
+            now = time.monotonic()
+            at = max(now, next_start[0])
+            next_start[0] = at + MIN_INTERVAL_S
+        if at > now:
+            time.sleep(at - now)
 
     def get(offset: int) -> dict:
-        nonlocal client, fetched
         if (page := _load(d, offset)) is not None:
             return page
-        if client is None:
-            if not key:
-                raise GistdaError("GISTDA_API_KEY is not set and pages are missing from " + str(d))
-            client = _client(key)
-        if fetched:
-            time.sleep(MIN_INTERVAL_S)
-        page = fetch_page(client, pv, offset)
+        c = ensure_client()
+        pace()
+        page = fetch_page(c, pv, offset)
         _check_filter(page, pv)
         _save(d, offset, page, key)
-        fetched += 1
+        with lock:
+            fetched[0] += 1
         return page
+
+    def fetch_info(offset: int) -> tuple[int, object]:
+        """Shape count and head of one page: the page itself is not kept, so a province never sits in memory."""
+        page = get(offset)
+        return len(page["features"]), (gf._head(page) if page["features"] else None)
 
     try:
         first = get(0)
         total = first.get("numberMatched") if isinstance(first.get("numberMatched"), int) else None
         head = gf._head(first) if first["features"] else None
-        page, offset, pages = first, 0, 1
-        while True:
-            n = len(page["features"])
-            offset += n
-            if total is not None:
-                if offset >= total:
-                    break
-                if n == 0:
-                    raise GistdaError(f"pv{pv}: ended at {offset} of its {total} shapes")
-            elif n < PAGE:
-                break
-            if offset >= MAX_SHAPES:
-                raise GistdaError(f"pv{pv}: more than {MAX_SHAPES} shapes, offset looks ignored")
-            page = get(offset)
-            pages += 1
-            if head and page["features"] and gf._head(page) == head:
-                raise GistdaError(f"pv{pv}: page at offset {offset} repeats the first page, offset looks ignored")
+        if total is None:
+            pages = 1
+            offset, page = len(first["features"]), first
+            while page["features"] and len(page["features"]) == PAGE:
+                if offset >= MAX_SHAPES:
+                    raise GistdaError(f"pv{pv}: more than {MAX_SHAPES} shapes, offset looks ignored")
+                page = get(offset)
+                pages += 1
+                offset += len(page["features"])
+        else:
+            if total > MAX_SHAPES:
+                raise GistdaError(f"pv{pv}: {total} shapes, more than {MAX_SHAPES}: offset looks ignored")
+            if total and not first["features"]:
+                raise GistdaError(f"pv{pv}: ended at 0 of its {total} shapes")
+            step = len(first["features"]) or PAGE
+            offsets = list(range(step, total, step))
+            ex = ThreadPoolExecutor(max_workers=WORKERS)
+            try:
+                futures = [ex.submit(fetch_info, o) for o in offsets]
+                pages = 1 + len(offsets)
+                for o, f in zip(offsets, futures):
+                    n, got_head = f.result()
+                    expect = min(step, total - o)
+                    if n == 0:
+                        raise GistdaError(f"pv{pv}: ended at {o} of its {total} shapes")
+                    if n != expect:
+                        raise GistdaError(f"pv{pv}: page at offset {o} has {n} shapes, expected {expect}")
+                    if head and got_head == head:
+                        raise GistdaError(f"pv{pv}: page at offset {o} repeats the first page, offset looks ignored")
+            finally:
+                ex.shutdown(wait=True, cancel_futures=True)
     finally:
         if own and client is not None:
             client.close()
-    return {"number_matched": total, "pages": pages, "fetched": fetched,
-            "download_s": round(time.monotonic() - started, 1) if fetched else None,
+    return {"number_matched": total, "pages": pages, "fetched": fetched[0],
+            "download_s": round(time.monotonic() - started, 1) if fetched[0] else None,
             "raw_bytes": sum(p.stat().st_size for p in d.glob("*.json.gz"))}
 
 
