@@ -27,9 +27,7 @@ def test_a_fact_about_a_saved_place_is_kept_there(conn, fake_llm):  # noqa: F811
     msg = "ร้านส้มตำมีหมา"
     fake_llm[msg] = {"intent": "remember", "saved": "ร้านส้มตำ", "facts": {"household": {"pets": ["หมา"]}}}
     r = chat.handle(conn, "U-pf1", "web", text=msg)
-    assert "(ร้านส้มตำ)" in r.text and "ขออนุญาตจำ" in r.text        # household facts still need consent
-    assert _loc(conn, uid, "ร้านส้มตำ")["pending"] == {"household": {"pets": ["หมา"]}}
-    chat.handle(conn, "U-pf1", "web", text=chat.CONSENT_YES)
+    assert "(ร้านส้มตำ)" in r.text and "ขออนุญาตจำ" not in r.text    # a pet is not health data: no consent asked
     prof = tools.get_user_profile(conn, uid)
     assert _loc(conn, uid, "ร้านส้มตำ")["facts"] == {"household": {"pets": ["หมา"]}}
     assert _loc(conn, uid, "ร้านส้มตำ")["pending"] == {} and prof["memory"]["household"] == {}
@@ -43,15 +41,14 @@ def test_a_fact_about_a_saved_place_is_kept_there(conn, fake_llm):  # noqa: F811
 def test_rules_alone_keep_a_place_fact_there(conn):  # noqa: F811
     uid = _user(conn, "U-pf2")
     chat.handle(conn, "U-pf2", "line", text="ร้านส้มตำมีหมา")
-    assert _loc(conn, uid, "ร้านส้มตำ")["pending"] == {"household": {"pets": ["หมา"]}}
-    assert _loc(conn, uid, "บ้าน")["pending"] == {} and tools.get_user_profile(conn, uid)["pending"] == {}
+    assert _loc(conn, uid, "ร้านส้มตำ")["facts"] == {"household": {"pets": ["หมา"]}}
+    assert _loc(conn, uid, "บ้าน")["facts"] == {} and tools.get_user_profile(conn, uid)["memory"]["household"] == {}
 
 
 def test_a_fact_without_a_place_is_general(conn):  # noqa: F811
     risk.compute_all(conn, NOW)
     uid = _user(conn, "U-pf3")
     chat.handle(conn, "U-pf3", "line", text="มีหมา")
-    chat.handle(conn, "U-pf3", "line", text=chat.CONSENT_YES)
     assert tools.get_user_profile(conn, uid)["memory"]["household"] == {"pets": ["หมา"]}
     for q in ("ร้านส้มตำน้ำจะท่วมไหม", "บ้านน้ำจะท่วมไหม"):
         assert PET_TIP in chat.handle(conn, "U-pf3", "line", text=q).text
@@ -60,7 +57,7 @@ def test_a_fact_without_a_place_is_general(conn):  # noqa: F811
 def test_medical_needs_stay_with_the_person(conn):  # noqa: F811
     uid = _user(conn, "U-pf4")
     chat.handle(conn, "U-pf4", "line", text="ร้านส้มตำมีหมา แม่ต้องฟอกไต")
-    assert _loc(conn, uid, "ร้านส้มตำ")["pending"] == {"household": {"pets": ["หมา"]}}
+    assert _loc(conn, uid, "ร้านส้มตำ")["facts"] == {"household": {"pets": ["หมา"]}}
     assert tools.get_user_profile(conn, uid)["pending"] == {"needs": {"dialysis": True}}
 
 
@@ -100,7 +97,7 @@ def test_forgetting_health_clears_every_place(conn):  # noqa: F811
     uid = _user(conn, "U-pf8")
     chat.handle(conn, "U-pf8", "line", text="บ้านมียายติดเตียง")
     chat.handle(conn, "U-pf8", "line", text=chat.CONSENT_YES)
-    chat.handle(conn, "U-pf8", "line", text="ร้านส้มตำมีแมว")
+    chat.handle(conn, "U-pf8", "line", text="ร้านส้มตำมียายติดเตียง")
     r = chat.handle(conn, "U-pf8", "line", text="ลบข้อมูลสุขภาพ")
     assert r.text.startswith("ลบข้อมูลสุขภาพ")
     assert _loc(conn, uid, "บ้าน")["facts"] == {} and _loc(conn, uid, "ร้านส้มตำ")["pending"] == {}
@@ -108,7 +105,7 @@ def test_forgetting_health_clears_every_place(conn):  # noqa: F811
 
 def test_consent_no_drops_place_facts_too(conn):  # noqa: F811
     uid = _user(conn, "U-pf9")
-    chat.handle(conn, "U-pf9", "line", text="ร้านส้มตำมีหมา")
+    chat.handle(conn, "U-pf9", "line", text="ร้านส้มตำมียายติดเตียง")
     chat.handle(conn, "U-pf9", "line", text=chat.CONSENT_NO)
     assert _loc(conn, uid, "ร้านส้มตำ")["pending"] == {} and _loc(conn, uid, "ร้านส้มตำ")["facts"] == {}
 
@@ -122,3 +119,15 @@ def test_merging_accounts_joins_a_place_facts(conn):  # noqa: F811
     tools.merge_users(conn, a, b)
     [loc] = tools.get_user_profile(conn, b)["locations"]
     assert loc["facts"] == {"household": {"pets": ["แมว"], "elderly": True}, "house": {"stories": 1}}
+
+
+def test_a_pet_needs_no_consent_but_health_still_does(conn):  # noqa: F811
+    """A pet is not health data: kept at once, no PDPA prompt. Said with a bedridden grandma, only she waits."""
+    uid = tools.get_or_create_user(conn, "U-pf11")
+    r = chat.handle(conn, "U-pf11", "line", text="มีแมว 2 ตัว")
+    assert "ขออนุญาตจำ" not in r.text and "ข้อมูลสุขภาพ" not in r.text
+    assert tools.get_user_profile(conn, uid)["memory"]["household"] == {"pets": ["แมว"]}
+    r = chat.handle(conn, "U-pf11", "line", text="มีหมา ยายติดเตียง")
+    prof = tools.get_user_profile(conn, uid)
+    assert "ขออนุญาตจำ" in r.text
+    assert prof["memory"]["household"] == {"pets": ["หมา"]} and prof["pending"] == {"household": {"immobile": ["ยาย"]}}

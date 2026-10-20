@@ -268,7 +268,7 @@ Who: the signed-in account (LINE or Google), else the anonymous chat from the **
 {
   "places": [ { "id": 3, "label": "บ้านแม่", "lat": 14.37, "lon": 100.47, "approx": true,
                 "where": "อ.บางบาล จ.พระนครศรีอยุธยา",
-                "facts": [ { "kind": "household", "text": "สัตว์เลี้ยง: หมา", "sensitive": true,
+                "facts": [ { "kind": "household", "text": "สัตว์เลี้ยง: หมา", "sensitive": false,
                              "list": "pets", "names": ["หมา"] } ],
                 "nearest": { "station_id": 2608, "code": "C.37", "name_th": "บ้านบางบาล", "distance_km": 1.3,
                              "risk_tier": "warning", "diff_wl_bank": -0.06, "observed_at": "…" } } ],
@@ -284,7 +284,8 @@ Who: the signed-in account (LINE or Google), else the anonymous chat from the **
 - `facts` are general: said without naming a place, they hold at every place. `places[].facts` hold at that place only
   ("ร้านส้มตำมีหมา" → the shop's dog), same shape. A place's facts never include `needs`: medical needs stay with
   the person. Chat answers, shelter ranking and alerts for a place use its facts plus the general ones.
-- `facts[].kind` is one of `household`, `needs` (sensitive), `house`, `assets`, `history`. A place that isn't a home
+- `facts[].kind` is one of `household`, `needs` (sensitive), `house`, `assets`, `history`. `sensitive` is per line:
+  household lines are, except pets (not health data, kept without consent). A place that isn't a home
   says "2 ชั้น", not "บ้าน 2 ชั้น".
 - `facts[].list`: the names the person gave that the line shows, which can be renamed: `immobile` (who can't walk),
   `pets`, `past_floods` (one line each). `null` for checklist facts (มีรถยนต์, บ้าน 2 ชั้น), which have no name.
