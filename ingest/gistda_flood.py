@@ -1,12 +1,12 @@
 """GISTDA satellite flood extent → flood_cells. The only module that downloads GISTDA's flood layers.
 
-    python -m ingest.gistda_flood                  # both layers once (3-day, then 7-day)
+    python -m ingest.gistda_flood                  # every layer once (3-day, 7-day, then 30-day)
     python -m ingest.gistda_flood --period 3days
     python -m ingest.gistda_flood --force          # re-store both even if unchanged (after a parser fix)
     python -m ingest.gistda_flood --every 10800    # loop; the API starts this as its own low-priority process
                                                    # when SCHEDULER=1 and a key is set (supervise below)
 
-GET https://api-gateway.gistda.or.th/api/2.0/resources/features/flood/{3days|7days}?limit=&offset=
+GET https://api-gateway.gistda.or.th/api/2.0/resources/features/flood/{3days|7days|30days}?limit=&offset=
 (OGC API Features, needs GISTDA_API_KEY). One GeoJSON feature per flooded H3 cell (res 9, ~0.1 km²).
 The old gi-service/v1.0/disasters/flood-extent-1day point query is dead. What we know about this one comes from
 other projects' write-ups (Oct 2026), not yet from a response of ours:
@@ -44,7 +44,7 @@ from common.config import RAW_DIR, ROOT
 from ingest.thaiwater import BKK
 
 BASE = "https://api-gateway.gistda.or.th/api/2.0/resources/features/flood"
-PERIODS = ("3days", "7days")
+PERIODS = ("3days", "7days", "30days")   # shortest first: api/flood.py reads "seen lately" from this order
 PAGE = 1000
 MIN_INTERVAL_S = 1.0
 MAX_CELLS = 400_000                     # far above any layer seen: past this, offset is being ignored
@@ -174,7 +174,8 @@ def parse_feature(f: dict) -> dict | None:
             used.add(k)
             break
 
-    out = {"h3": cell, "lat": lat, "lon": lon, "raw_area": raw_area, "area_unit": unit, "observed_at": None}
+    out = {"h3": cell, "lat": lat, "lon": lon, "raw_area": raw_area, "area_unit": unit, "observed_at": None,
+           "scene_from": None}
     for field, keys in NAME_KEYS.items():
         hit = _first(low, keys)
         out[field] = _name(hit[1]) if hit else None
@@ -196,8 +197,9 @@ def parse_feature(f: dict) -> dict | None:
         out["observed_at"] = _when(hit[1])
         used.add(hit[0])
     elif isinstance(low.get("file_name"), str) and (scenes := SCENE_DATE.findall(low["file_name"])):
-        d, t = max(scenes)                   # the newest scene the cell was seen in
-        out["observed_at"] = datetime.strptime(d + t, "%Y%m%d%H%M").replace(tzinfo=BKK)
+        when = [datetime.strptime(d + t, "%Y%m%d%H%M").replace(tzinfo=BKK) for d, t in scenes]
+        out["observed_at"] = max(when)       # the newest scene the cell was seen in
+        out["scene_from"] = min(when)        # the oldest: with it, a layer's dates span its whole window
         used.add("file_name")
     # Everything else as sent (impact counts, scenes), scalars only. URLs are dropped: links can carry the key.
     out["props"] = {k: v for k, v in (props or {}).items() if str(k).lower() not in used
@@ -231,13 +233,14 @@ def finish(cells: list[dict]) -> tuple[list[dict], str]:
             by_cell[c["h3"]] = c
     guessed = area_unit(list(by_cell.values()))
     rows = []
-    for c in by_cell.values():
+    for c in by_cell.values():               # in place: a 30-day layer is ~190k cells on a 1.7 GB VM
         full = h3.cell_area(c["h3"], "km^2")
         unit = c["area_unit"] or guessed
         area = c["raw_area"] * TO_KM2[unit] if c["raw_area"] is not None and unit in TO_KM2 else full
         res = h3.get_resolution(c["h3"])
-        parents = {f"h3_r{p}": h3.cell_to_parent(c["h3"], p) if p < res else c["h3"] for p in PARENT_RES}
-        rows.append({**c, **parents, "area_km2": min(area, full)})
+        c.update({f"h3_r{p}": h3.cell_to_parent(c["h3"], p) if p < res else c["h3"] for p in PARENT_RES})
+        c["area_km2"] = min(area, full)
+        rows.append(c)
     return rows, guessed
 
 
@@ -348,14 +351,16 @@ def store(conn, period: str, rows: list[dict], fp: str | None, unit: str) -> dic
     flood_cells_history. The caller commits."""
     conn.execute("DELETE FROM flood_cells WHERE period = %s", (period,))
     with conn.cursor() as cur, cur.copy(f"COPY flood_cells ({', '.join(COLS)}) FROM STDIN") as copy:
-        for r in rows:
-            copy.write_row([period, *(r[c] for c in COLS[1:-1]), Jsonb(r["props"])])
+        for r in rows:                       # props may already be JSON text (run_once keeps them that way)
+            props = r["props"] if isinstance(r["props"], str) else Jsonb(r["props"])
+            copy.write_row([period, *(r[c] for c in COLS[1:-1]), props])
     by_province: dict[str, float] = defaultdict(float)
     for r in rows:
         by_province[r["province"] or r["pv_code"] or "?"] += r["area_km2"]
     seen = [r["observed_at"] for r in rows if r["observed_at"]]
+    since = [w for r in rows if (w := r.get("scene_from") or r["observed_at"])]
     summary = {"period": period, "cells": len(rows), "area_km2": round(sum(r["area_km2"] for r in rows), 4),
-               "observed_from": min(seen, default=None), "observed_to": max(seen, default=None)}
+               "observed_from": min(since, default=None), "observed_to": max(seen, default=None)}
     fetch_id = conn.execute(
         "INSERT INTO flood_fetches (period, cells, area_km2, observed_from, observed_to, fingerprint, "
         "area_unit, by_province) VALUES (%(period)s, %(cells)s, %(area_km2)s, %(observed_from)s, "
@@ -368,6 +373,12 @@ def store(conn, period: str, rows: list[dict], fp: str | None, unit: str) -> dic
     conn.execute(f"INSERT INTO flood_cells_history (day, period, fetch_id, {cols}) "
                  f"SELECT %s, period, %s, {cols} FROM flood_cells WHERE period = %s", (day, fetch_id, period))
     return {**summary, "day": day}
+
+
+def _lean(cell: dict) -> dict:
+    """GISTDA's other attributes as JSON text, not a dict: a third of the memory, for a layer of ~190k cells."""
+    cell["props"] = json.dumps(cell["props"], ensure_ascii=False, separators=(",", ":"), default=str)
+    return cell
 
 
 def run_once(conn, period: str, key: str | None = None, client: httpx.Client | None = None,
@@ -397,7 +408,7 @@ def run_once(conn, period: str, key: str | None = None, client: httpx.Client | N
         for page in fetch_layer(client, period, first):
             save_page(snap, offset, page, key)
             offset += len(page["features"])
-            cells += [c for f in page["features"] if (c := parse_feature(f))]
+            cells += [_lean(c) for f in page["features"] if (c := parse_feature(f))]
         rows, unit = finish(cells)
         summary = store(conn, period, rows, fp, unit)
         conn.commit()

@@ -100,7 +100,9 @@ gateway answers 407; with a bad one 401 `INVALID_API_KEY` (checked 2026-10-19, a
   `GET https://api-gateway.gistda.or.th/api/2.0/resources/features/flood/{1day|3days|7days|30days}?limit=&offset=`
   (`bbox` and `pv_idn` filter; `skipGeometry`/`properties` are ignored, so geometry always comes back, ~3 KB a cell).
   Reported sizes: 3 days ~80k cells, 7 days ~110k (a few hundred MB). 1-day/3-day are sometimes empty.
-  Client + import: `ingest/gistda_flood.py` (3-day + 7-day, every 3 h in the scheduler, skips an unchanged layer).
+  Client + import: `ingest/gistda_flood.py` (3-day, 7-day + 30-day, every 3 h in the scheduler, skips an unchanged
+  layer). All cells of a layer share its scenes (`file_name`, ~36 for 30 days): there is no date per cell, so
+  "how lately" comes from the layers nesting (api/flood.py `seen`). 30 days ≈ 190k cells (~544 MB to parse).
   Map tiles also exist (`maps/flood/{period}/tms/{z}/{x}/{y}`, key needed, so they'd need a proxy): not used.
 - Flood recurrence 2011–2023 at a point ("has this spot flooded before, how often"):
   `https://api-gateway.gistda.or.th/api/2.0/resources/gi-service/v1.0/disasters/flood-recurrence?lat={lat}&lon={lon}`

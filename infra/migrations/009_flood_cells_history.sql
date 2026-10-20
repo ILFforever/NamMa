@@ -1,11 +1,18 @@
--- Our own record of GISTDA's live flood layers (copy plan phase 4). flood_cells holds only the latest 3-day and
--- 7-day layer and GISTDA keeps no history of them, so every stored layer is also copied here, one copy per period
--- per day (Bangkok date): a later layer the same day replaces that day's rows. Kept for good.
+-- GISTDA's 30-day layer joins the 3-day and 7-day ones: a month of satellite scenes, so the map can tell where
+-- water was seen lately from where it was seen weeks ago (api/flood.py `seen`).
+ALTER TABLE flood_cells DROP CONSTRAINT flood_cells_period_check,
+    ADD CONSTRAINT flood_cells_period_check CHECK (period IN ('3days', '7days', '30days'));
+ALTER TABLE flood_fetches DROP CONSTRAINT flood_fetches_period_check,
+    ADD CONSTRAINT flood_fetches_period_check CHECK (period IN ('3days', '7days', '30days'));
+
+-- Our own record of GISTDA's live flood layers (copy plan phase 4). flood_cells holds only the latest layer of each
+-- period and GISTDA keeps no history of them, so every stored layer is also copied here, one copy per period per
+-- day (Bangkok date): a later layer the same day replaces that day's rows. Kept for good.
 -- Names and H3 parents are left out (they come from the codes and from h3), as are GISTDA's other attributes; the
 -- raw pages under var/raw/gistda/flood/<period>/<time>/ keep everything for GISTDA_SNAPSHOT_KEEP_DAYS.
 CREATE TABLE flood_cells_history (
     day          DATE NOT NULL,
-    period       TEXT NOT NULL CHECK (period IN ('3days', '7days')),
+    period       TEXT NOT NULL CHECK (period IN ('3days', '7days', '30days')),
     h3           TEXT NOT NULL,
     fetch_id     BIGINT NOT NULL REFERENCES flood_fetches (id),
     lat          DOUBLE PRECISION NOT NULL,
@@ -21,3 +28,5 @@ CREATE TABLE flood_cells_history (
     hospitals    DOUBLE PRECISION,
     PRIMARY KEY (day, period, h3)
 );
+CREATE INDEX flood_cells_history_tambon ON flood_cells_history (tb_code, period, day);
+CREATE INDEX flood_cells_tambon ON flood_cells (tb_code, period);

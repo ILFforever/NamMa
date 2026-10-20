@@ -109,7 +109,10 @@ def flood_extent_text(extent: dict, approx: bool) -> str:
     """One line from agent.gistda.check_flood_extent. A place found by its name is only a district centre, so there
     it gives the flooded area around, not a yes/no for the point."""
     r = f"{extent['radius_km']:.0f} กม."
-    if extent["nearest_km"] is None:
+    if extent["nearest_km"] is None and (e := extent.get("earlier")):
+        body = (f"ไม่พบพื้นที่น้ำท่วมในรัศมี {r} แต่ในรอบ {e['days']} วันเคยพบน้ำท่วมราว {_rai(e['area_km2_nearby'])} ไร่ "
+                f"ห่างราว {e['nearest_km']:.1f} กม. น้ำอาจลดลงแล้ว")
+    elif extent["nearest_km"] is None:
         body = f"ไม่พบพื้นที่น้ำท่วมในรัศมี {r}"
     elif approx:
         body = f"พื้นที่น้ำท่วมในรัศมี {r} รวมราว {_rai(extent['area_km2_nearby'])} ไร่"

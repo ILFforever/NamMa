@@ -9,10 +9,10 @@ from fastapi import APIRouter, Depends, Query
 
 from agent import gistda
 from api.common import ApiError, envelope, get_db
+from ingest.gistda_flood import PERIODS          # shortest window first
 
 router = APIRouter()
 
-PERIODS = ("3days", "7days")
 RAI_PER_KM2 = 625
 # Area level → its (name, code) columns. Grouping uses the name, else the code, so a layer with only codes still splits.
 LEVELS = {"province": [("province", "pv_code")],
@@ -28,6 +28,18 @@ def _period(period: str) -> str:
     if period not in PERIODS:
         raise ApiError(400, "bad_request", f"period must be one of {', '.join(PERIODS)}")
     return period
+
+
+def _seen_rank(period: str) -> str:
+    """SQL for a flood_cells row of `period`: the index in PERIODS of the shortest stored window that also holds the
+    cell, i.e. how lately GISTDA saw water there. 0 = in the 3-day layer too. Absence from a shorter layer can also
+    mean no scene covered the place lately, which is why the UI says "seen", never "dried"."""
+    shorter = PERIODS[:PERIODS.index(period)]
+    if not shorter:
+        return "0"
+    whens = " ".join(f"WHEN EXISTS (SELECT 1 FROM flood_cells x WHERE x.period = '{w}' AND x.h3 = flood_cells.h3) "
+                     f"THEN {i}" for i, w in enumerate(shorter))
+    return f"CASE {whens} ELSE {len(shorter)} END"
 
 
 def _layer(conn: psycopg.Connection, period: str) -> dict:
@@ -103,7 +115,9 @@ def _bbox(bbox: str) -> tuple[float, float, float, float]:
 def flood_cells(bbox: str = Query(..., max_length=100), period: str = "3days", res: int = Query(9),
                 limit: int = Query(5000, ge=1, le=20000), conn: psycopg.Connection = Depends(get_db)):
     """Flooded H3 cells in the box (the map's view), largest first. res 9 is GISTDA's own cells; 5–8 sums them into
-    parent cells for a zoomed-out map. share = flooded part of the cell (0–1). truncated: more than `limit`."""
+    parent cells for a zoomed-out map. share = flooded part of the cell (0–1). truncated: more than `limit`.
+    seen = the shortest layer that also holds the cell (for a parent, the freshest of its cells): with
+    period=30days, "3days" is water seen in the last 3 days and "30days" water seen only weeks ago."""
     _period(period)
     if res not in CELL_RES:
         raise ApiError(400, "bad_request", f"res must be one of {', '.join(map(str, CELL_RES))}")
@@ -111,23 +125,26 @@ def flood_cells(bbox: str = Query(..., max_length=100), period: str = "3days", r
     pad = PAD_DEG[res]
     box = [period, s - pad, n + pad, w - pad, e + pad]
     where = "period = %s AND lat BETWEEN %s AND %s AND lon BETWEEN %s AND %s"
+    rank = _seen_rank(period)
     if res == 9:
-        rows = conn.execute(f"SELECT h3, 1 AS cells, area_km2 AS km2, province, amphoe, tambon, observed_at, "
-                            f"{', '.join(IMPACT)} "
+        rows = conn.execute(f"SELECT h3, 1 AS cells, area_km2 AS km2, {rank} AS seen, province, amphoe, tambon, "
+                            f"observed_at, {', '.join(IMPACT)} "
                             f"FROM flood_cells WHERE {where} ORDER BY area_km2 DESC, h3 LIMIT %s",
                             [*box, limit + 1]).fetchall()
     else:
-        rows = conn.execute(f"SELECT h3_r{res} AS h3, count(*) AS cells, sum(area_km2) AS km2 FROM flood_cells "
-                            f"WHERE {where} GROUP BY 1 ORDER BY km2 DESC, 1 LIMIT %s", [*box, limit + 1]).fetchall()
+        rows = conn.execute(f"SELECT h3_r{res} AS h3, count(*) AS cells, sum(area_km2) AS km2, min({rank}) AS seen "
+                            f"FROM flood_cells WHERE {where} GROUP BY 1 ORDER BY km2 DESC, 1 LIMIT %s",
+                            [*box, limit + 1]).fetchall()
     cells = []
     for r in rows[:limit]:
         c = {"h3": r["h3"], "cells": r["cells"], "area_km2": round(r["km2"], 4),
-             "share": round(min(r["km2"] / h3.cell_area(r["h3"], "km^2"), 1.0), 3)}
+             "share": round(min(r["km2"] / h3.cell_area(r["h3"], "km^2"), 1.0), 3), "seen": PERIODS[r["seen"]]}
         if res == 9:
             c |= {"province": r["province"], "amphoe": r["amphoe"], "tambon": r["tambon"],
                   "observed_at": r["observed_at"], **{k: _count(r[k]) for k in IMPACT}}
         cells.append(c)
-    return envelope(conn, {**_layer(conn, period), "res": res, "truncated": len(rows) > limit, "cells": cells})
+    return envelope(conn, {**_layer(conn, period), "res": res, "truncated": len(rows) > limit, "cells": cells,
+                           "windows": [_layer(conn, p) for p in PERIODS[:PERIODS.index(period) + 1]]})
 
 
 @router.get("/api/flood/near")
@@ -187,3 +204,41 @@ def flood_history(level: str = "province", province: str | None = Query(None, ma
     areas.sort(key=lambda a: -max(a["rai_by_year"].values(), default=0))
     return envelope(conn, {"level": level, "province": province, "years": _history_years(conn),
                            "provinces": copied, "areas": areas, "source": "GISTDA"})
+
+
+# --- one sub-district's flood story: this season's layers, our own daily record, and 2011– ----------------------
+
+@router.get("/api/flood/tambon")
+def flood_tambon(code: str = Query(..., min_length=6, max_length=6, pattern=r"^\d{6}$"),
+                 conn: psycopg.Connection = Depends(get_db)):
+    """Everything we hold on one sub-district (GISTDA tb_idn), for the flood tab's area panel: each stored layer's
+    flooded area there and when GISTDA last saw water (`last_seen`, the shortest layer with any), the daily record
+    we keep of those layers (flood_cells_history, from our first download on), and its flooded years 2011–
+    (`history`, null when its province is not copied yet). 404 when no source knows the code."""
+    from ingest.gistda_history import years_of
+    hist = conn.execute("SELECT province, amphoe, tambon, years, rai_by_year FROM flood_history_tambon "
+                        "WHERE tb_code = %s", (code,)).fetchone()
+    names = hist or conn.execute("SELECT max(province) AS province, max(amphoe) AS amphoe, max(tambon) AS tambon "
+                                 "FROM flood_cells WHERE tb_code = %s HAVING count(*) > 0", (code,)).fetchone()
+    copied = conn.execute("SELECT 1 FROM flood_history_runs WHERE pv_code = %s", (code[:2],)).fetchone()
+    if names is None and copied is None:
+        raise ApiError(404, "not_found", "no flood data for this sub-district code")
+    by_period = {r["period"]: r for r in conn.execute(
+        "SELECT period, count(*) AS cells, sum(area_km2) AS km2, sum(buildings) AS buildings, "
+        "sum(population) AS population FROM flood_cells WHERE tb_code = %s GROUP BY period", (code,))}
+    windows = []
+    for p in PERIODS:
+        r = by_period.get(p)
+        windows.append({**_layer(conn, p), "cells": r["cells"] if r else 0, **_area(r["km2"] if r else 0),
+                        "buildings": _count(r and r["buildings"]), "population": _count(r and r["population"])})
+    last_seen = next((w["period"] for w in windows if w["cells"]), None)
+    record = [{"day": r["day"], "period": r["period"], "cells": r["cells"], **_area(r["km2"])} for r in conn.execute(
+        "SELECT day, period, count(*) AS cells, sum(area_km2) AS km2 FROM flood_cells_history WHERE tb_code = %s "
+        "GROUP BY day, period ORDER BY day, period", (code,))]
+    history = None if hist is None and copied is None else {
+        "years_covered": _history_years(conn),
+        "years": years_of(hist["years"]) if hist else [],
+        "rai_by_year": hist["rai_by_year"] if hist else {}}
+    return envelope(conn, {"code": code, "province": names and names["province"], "amphoe": names and names["amphoe"],
+                           "tambon": names and names["tambon"], "windows": windows, "last_seen": last_seen,
+                           "record": record, "history": history, "source": "GISTDA"})
