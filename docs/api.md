@@ -109,7 +109,10 @@ One river, all its stations (`reason: "match"`, `distance_km: null`). 404 if unk
 GISTDA's flooded H3 cells (res 9, ~0.1 km² each) from the latest **3-day**, **7-day** and **30-day** satellite layers,
 stored by `ingest/gistda_flood.py` (every 3 h when `GISTDA_API_KEY` is set). Credit GISTDA (สทอภ.) in the UI. Every
 number is a count or sum of GISTDA's cells: `area_km2` is GISTDA's flooded area in the cell (the whole cell when it
-gives none), `area_rai` = km² × 625, rounded. `period` is `3days` (default), `7days` or `30days`; anything else is 400.
+gives none), `area_rai` = km² × 625, rounded. For `7days` and `30days` a cell's figure is its **largest** in that
+layer or a shorter one (`flood_extent`): GISTDA's 30-day figure for a cell can be smaller than its 7-day one (on
+2026-10-20 the 7-day cells held 4,720 km² in their layer, 3,676 km² in the 30-day one), so the 30-day number is the
+most water seen within 30 days and never less than the week's. `period` is `3days` (default), `7days` or `30days`; anything else is 400.
 
 Every answer carries the layer: `{ period, fetched_at, observed_from, observed_to }`. `fetched_at` is when we
 downloaded it; `observed_*` is the span of GISTDA's satellite scenes in it (the 30-day layer: about a month). All three

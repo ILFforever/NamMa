@@ -1,6 +1,7 @@
 """GISTDA satellite flood extent for the web app's flood tab (docs/api.md → Flood).
 
-Cells come from ingest/gistda_flood.py. Every number here is a count or a sum of GISTDA's cells; nothing is
+Cells come from ingest/gistda_flood.py, read from flood_extent: a period's figure for a cell is the largest in that
+layer or a shorter one (GISTDA's 30-day figure alone can be smaller than its 7-day one for the same cell). Every number here is a count or a sum of GISTDA's cells; nothing is
 estimated. Area is in km², and in rai (×625) because that is how Thai flood reports state it.
 """
 import h3
@@ -31,13 +32,13 @@ def _period(period: str) -> str:
 
 
 def _seen_rank(period: str) -> str:
-    """SQL for a flood_cells row of `period`: the index in PERIODS of the shortest stored window that also holds the
+    """SQL for a flood_extent row of `period`: the index in PERIODS of the shortest stored window that also holds the
     cell, i.e. how lately GISTDA saw water there. 0 = in the 3-day layer too. Absence from a shorter layer can also
     mean no scene covered the place lately, which is why the UI says "seen", never "dried"."""
     shorter = PERIODS[:PERIODS.index(period)]
     if not shorter:
         return "0"
-    whens = " ".join(f"WHEN EXISTS (SELECT 1 FROM flood_cells x WHERE x.period = '{w}' AND x.h3 = flood_cells.h3) "
+    whens = " ".join(f"WHEN EXISTS (SELECT 1 FROM flood_extent x WHERE x.period = '{w}' AND x.h3 = flood_extent.h3) "
                      f"THEN {i}" for i, w in enumerate(shorter))
     return f"CASE {whens} ELSE {len(shorter)} END"
 
@@ -88,9 +89,9 @@ def flood_areas(period: str = "3days", level: str = "province",
         f"SELECT {pick}, max({code}) AS code, count(*) AS cells, sum(area_km2) AS km2, "
         "sum(lat * area_km2) / nullif(sum(area_km2), 0) AS lat, sum(lon * area_km2) / nullif(sum(area_km2), 0) AS lon, "
         "sum(buildings) AS buildings, sum(population) AS population "
-        f"FROM flood_cells WHERE period = %s{where} GROUP BY {group} ORDER BY km2 DESC, {group} LIMIT %s",
+        f"FROM flood_extent WHERE period = %s{where} GROUP BY {group} ORDER BY km2 DESC, {group} LIMIT %s",
         [period, *params, limit]).fetchall()
-    total = conn.execute(f"SELECT count(*) AS cells, sum(area_km2) AS km2 FROM flood_cells WHERE period = %s{where}",
+    total = conn.execute(f"SELECT count(*) AS cells, sum(area_km2) AS km2 FROM flood_extent WHERE period = %s{where}",
                          [period, *params]).fetchone()
     areas = [{"province": r["province"], "amphoe": r.get("amphoe"), "tambon": r.get("tambon"), "code": r["code"],
               "cells": r["cells"], **_area(r["km2"]),
@@ -129,11 +130,11 @@ def flood_cells(bbox: str = Query(..., max_length=100), period: str = "3days", r
     if res == 9:
         rows = conn.execute(f"SELECT h3, 1 AS cells, area_km2 AS km2, {rank} AS seen, province, amphoe, tambon, "
                             f"observed_at, {', '.join(IMPACT)} "
-                            f"FROM flood_cells WHERE {where} ORDER BY area_km2 DESC, h3 LIMIT %s",
+                            f"FROM flood_extent WHERE {where} ORDER BY area_km2 DESC, h3 LIMIT %s",
                             [*box, limit + 1]).fetchall()
     else:
         rows = conn.execute(f"SELECT h3_r{res} AS h3, count(*) AS cells, sum(area_km2) AS km2, min({rank}) AS seen "
-                            f"FROM flood_cells WHERE {where} GROUP BY 1 ORDER BY km2 DESC, 1 LIMIT %s",
+                            f"FROM flood_extent WHERE {where} GROUP BY 1 ORDER BY km2 DESC, 1 LIMIT %s",
                             [*box, limit + 1]).fetchall()
     cells = []
     for r in rows[:limit]:
@@ -219,13 +220,13 @@ def flood_tambon(code: str = Query(..., min_length=6, max_length=6, pattern=r"^\
     hist = conn.execute("SELECT province, amphoe, tambon, years, rai_by_year FROM flood_history_tambon "
                         "WHERE tb_code = %s", (code,)).fetchone()
     names = hist or conn.execute("SELECT max(province) AS province, max(amphoe) AS amphoe, max(tambon) AS tambon "
-                                 "FROM flood_cells WHERE tb_code = %s HAVING count(*) > 0", (code,)).fetchone()
+                                 "FROM flood_extent WHERE tb_code = %s HAVING count(*) > 0", (code,)).fetchone()
     copied = conn.execute("SELECT 1 FROM flood_history_runs WHERE pv_code = %s", (code[:2],)).fetchone()
     if names is None and copied is None:
         raise ApiError(404, "not_found", "no flood data for this sub-district code")
     by_period = {r["period"]: r for r in conn.execute(
         "SELECT period, count(*) AS cells, sum(area_km2) AS km2, sum(buildings) AS buildings, "
-        "sum(population) AS population FROM flood_cells WHERE tb_code = %s GROUP BY period", (code,))}
+        "sum(population) AS population FROM flood_extent WHERE tb_code = %s GROUP BY period", (code,))}
     windows = []
     for p in PERIODS:
         r = by_period.get(p)

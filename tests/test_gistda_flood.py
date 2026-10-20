@@ -284,8 +284,8 @@ def test_flood_areas(api, monkeypatch, tmp_path, small_pages):
     assert empty["areas"] == []
 
     _store_layer(conn, monkeypatch, tmp_path, small_pages)
-    conn.execute("UPDATE flood_cells SET amphoe = 'เสนา', ap_code = '1406', tambon = 'บ้านแพน', tb_code = '140601' "
-                 "WHERE h3 IN (SELECT h3 FROM flood_cells ORDER BY h3 LIMIT 2)")
+    conn.execute("UPDATE flood_extent SET amphoe = 'เสนา', ap_code = '1406', tambon = 'บ้านแพน', tb_code = '140601' "
+                 "WHERE h3 IN (SELECT h3 FROM flood_extent ORDER BY h3 LIMIT 2)")
     d = client.get("/api/flood/areas", params={"period": "3days"}).json()["data"]
     assert set(d) == {"period", "fetched_at", "observed_from", "observed_to", "level", "total", "areas"}
     assert d["fetched_at"].endswith("+07:00") and d["observed_to"].startswith("2026-10-18")
@@ -459,3 +459,23 @@ def test_chat_says_the_water_may_have_gone_down(api, monkeypatch, tmp_path, smal
     line = answer.flood_extent_text(e, approx=True)
     assert "ในรอบ 30 วันเคยพบน้ำท่วม" in line and "น้ำอาจลดลงแล้ว" in line
     assert gistda.check_flood_extent(conn, 13.0, 100.0)["earlier"] is None                       # water there now
+
+
+def test_a_longer_period_never_shows_less_water_than_a_shorter_one(api, monkeypatch, tmp_path, small_pages):
+    """GISTDA's 30-day figure for a cell can be smaller than its 7-day one (seen 2026-10-20): flood_extent keeps each
+    cell's largest, so 30 days reads as the most water seen within 30 days."""
+    client, conn = api
+    week = _layer(7)
+    month = [{**f, "properties": {**f["properties"], "h3_area": f["properties"]["h3_area"] / 4}} for f in week]
+    _store_layer(conn, monkeypatch, tmp_path, {0: week[:3], 3: week[3:6], 6: week[6:]}, period="7days")
+    _store_layer(conn, monkeypatch, tmp_path, {0: month[:3], 3: month[3:6], 6: month[6:]}, period="30days")
+    raw = dict(conn.execute("SELECT period, sum(area_km2) FROM flood_cells GROUP BY period").fetchall())
+    assert raw["30days"] < raw["7days"]                                                 # as GISTDA sent them
+    total = {p: client.get("/api/flood/areas", params={"period": p}).json()["data"]["total"]["area_km2"]
+             for p in ("7days", "30days")}
+    assert total["30days"] == total["7days"] == pytest.approx(raw["7days"], abs=1e-3)
+    story = client.get("/api/flood/tambon", params={"code": "140504"}).json()["data"]
+    w = {x["period"]: x["area_rai"] for x in story["windows"]}
+    assert w["30days"] == w["7days"] and w["3days"] == 0
+    assert {r["period"]: r["area_rai"] for r in story["record"]} == {"7days": w["7days"], "30days": w["30days"]}
+    assert conn.execute("SELECT count(*) FROM flood_extent WHERE period = '3days'").fetchone()[0] == 0   # not fetched
