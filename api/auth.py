@@ -21,7 +21,7 @@ from pydantic import BaseModel, Field
 from agent import tools
 from api.common import ApiError, envelope, get_db
 
-SESSION_DAYS = 7
+SESSION_DAYS = 90
 DEMO = os.environ.get("DEMO_MODE", "1") == "1"
 
 router = APIRouter()
@@ -52,6 +52,14 @@ def current_user(authorization: str | None = Header(None), conn: psycopg.Connect
     if not row:
         raise ApiError(401, "invalid_token", "session expired or unknown")
     return row
+
+
+def optional_user(authorization: str | None = Header(None), conn: psycopg.Connection = Depends(get_db)) -> dict | None:
+    """Like current_user, but a bad or expired token is anonymous instead of 401: for chat, which must always answer."""
+    try:
+        return current_user(authorization, conn)
+    except ApiError:
+        return None
 
 
 def require_user(user: dict | None = Depends(current_user)) -> dict:

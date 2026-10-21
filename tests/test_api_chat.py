@@ -178,8 +178,14 @@ def test_signed_in_user_shares_the_line_identity(seeded):
     assert conn.execute("SELECT count(*) FROM messages m JOIN users u ON u.id = m.user_id "
                         "WHERE u.line_user_id = 'demo:user' AND m.channel = 'web'").fetchone()[0] == 2
     assert conn.execute("SELECT count(*) FROM users WHERE line_user_id = %s", (f"web:{sid}",)).fetchone()[0] == 0
+
+
+def test_expired_token_chats_anonymously(seeded):
+    client, conn = seeded
+    sid = str(uuid.uuid4())
     r = _chat(client, {"session_id": sid, "message": "สวัสดี"}, token="not-a-token")
-    assert r.status_code == 401 and r.json()["error"]["code"] == "invalid_token"
+    assert r.status_code == 200 and r.json()["data"]["reply"]
+    assert conn.execute("SELECT count(*) FROM users WHERE line_user_id = %s", (f"web:{sid}",)).fetchone()[0] == 1
 
 
 def test_agent_failure_gives_the_fallback_reply(seeded, monkeypatch):

@@ -12,7 +12,7 @@ from psycopg.rows import tuple_row
 from pydantic import BaseModel, Field
 
 from agent import chat, triage
-from api.auth import current_user
+from api.auth import optional_user
 from api.common import ApiError, envelope, get_db
 from line.webhook import FALLBACK
 
@@ -76,7 +76,7 @@ def _place_out(place: dict | None) -> dict | None:
 
 
 @router.post("/api/chat")
-def chat_turn(body: ChatIn, user: dict | None = Depends(current_user), conn: psycopg.Connection = Depends(get_db)):
+def chat_turn(body: ChatIn, user: dict | None = Depends(optional_user), conn: psycopg.Connection = Depends(get_db)):
     given = [x for x in (body.message, body.postback, body.location) if x is not None]
     if len(given) != 1:
         raise ApiError(400, "bad_request", "send exactly one of message, postback or location")
@@ -92,6 +92,7 @@ def chat_turn(body: ChatIn, user: dict | None = Depends(current_user), conn: psy
 
     _rate_limit(body.session_id)
     # Signed-in users chat as their account (LINE or Google); anonymous web chat is keyed by session.
+    # An expired token chats anonymously rather than failing: someone in danger still gets an answer.
     user_id = user["id"] if user else None
     external_id = None if user else f"web:{body.session_id}"
     conn.row_factory = tuple_row   # agent code reads rows by position (row[0])
